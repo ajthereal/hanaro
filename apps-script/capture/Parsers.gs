@@ -15,6 +15,7 @@ var MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, mei: 5, jun: 6, jul: 7, a
 function htmlToText(html) {
   if (!html) return '';
   var t = String(html)
+    .replace(/>\s+</g, '><')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<br\s*\/?>/gi, '\n')

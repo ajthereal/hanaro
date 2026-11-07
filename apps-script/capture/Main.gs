@@ -163,6 +163,7 @@ function captureRun() {
 
 /** Run once from the editor after pasting. Creates the 15-minute capture, the watchdog and the nightly backup. */
 function setup() {
+  PropertiesService.getScriptProperties().deleteProperty('LAST_TS'); // re-read the last 7 days; already-saved emails are skipped
   ScriptApp.getProjectTriggers().forEach(function (t) { ScriptApp.deleteTrigger(t); });
   ScriptApp.newTrigger('captureRun').timeBased().everyMinutes(15).create();
   ScriptApp.newTrigger('watchdogRun').timeBased().everyMinutes(30).create();

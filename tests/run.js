@@ -109,5 +109,19 @@ const a = P.parseEmail({ from: 'CREDITCARD.NOTIFICATION@cimbniaga.co.id', subjec
 const b = P.parseEmail({ from: 'CREDITCARD.NOTIFICATION@cimbniaga.co.id', subject: '[RAHASIA] Konfirmasi Transaksi', messageId: 'y', html: tbl([['No. Kartu Kredit', '5289-19XX-XXXX-XX18'], ['Jumlah Transaksi', '1,000.00 IDR'], ['Tanggal/Waktu Transaksi', '2026-10-30/23:33:12'], ['Nama Merchant', 'A']]) });
 eq('dedupe key stable', a.txn.dedupe_key, b.txn.dedupe_key);
 
+// --- Real emails have line breaks and tabs between cells; rows must still parse
+const rowNl = (k, v) => '\r\n\t\t<tr>\r\n\t\t\t<td width="198">' + k + '</td>\r\n\t\t\t<td width="2">: </td>\r\n\t\t\t<td>' + v + '</td>\r\n\t\t</tr>';
+r = P.parseEmail({
+  from: 'bca@bca.co.id', subject: 'Internet Transaction Journal', messageId: 'nl1',
+  html: '<html><body><div>Hello,<br/>\r\n details :</div><table>' + [['Status', 'Successful'], ['Transaction Date', '07 Nov 2026 17:43:53'], ['Transaction Type', 'Credit Card & Paylater - BCA'], ['Source of Fund', '8105****99'], ['Total Bill', 'IDR 1,000,000.00'], ['Total Payment', 'IDR 400,000.00'], ['Remaining Bill', 'IDR 600,000.00'], ['Reference No.', 'REF-NL-1']].map((x) => rowNl(x[0], x[1])).join('') + '</table></body></html>'
+});
+eq('bca journal with line breaks', r.status, 'parsed');
+eq('bca journal with line breaks amount', r.txn && r.txn.idr_amount, 400000);
+r = P.parseEmail({
+  from: 'kartukreditbca@bca.co.id', subject: 'Credit Card Transaction Notification', messageId: 'nl2',
+  html: '<table>' + [['Nomor Kartu', '431657XXXX1234'], ['Merchant / ATM', 'SAMPLE SHOP'], ['Pada Tanggal', '07-11-2026 20:13:39 WIB'], ['Sejumlah', 'Rp96.416,00']].map((x) => rowNl(x[0], x[1])).join('') + '</table>'
+});
+eq('bca card with line breaks', r.txn && r.txn.idr_amount, 96416);
+
 console.log(failed ? '\n' + failed + ' FAILED' : '\nAll passed');
 process.exit(failed ? 1 : 0);
