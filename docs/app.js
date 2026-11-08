@@ -7,7 +7,7 @@
     del: function (k) { try { localStorage.removeItem(k); } catch (e) {} }
   };
   var $ = function (id) { return document.getElementById(id); };
-  var state = { view: 'home', filter: 'all', later: {}, cats: null, accounts: [], kind: 'spent', counts: { review: 0 } };
+  var state = { token: 0, busy: false, err: false, sync: null, view: 'home', filter: 'all', later: {}, cats: null, accounts: [], kind: 'spent', counts: { review: 0 } };
 
   /* ---------- helpers ---------- */
   function esc(s) { return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -59,20 +59,51 @@
         throw e;
       });
   }
-  /** Loads fresh data; if offline, shows the last saved copy and says so. */
-  function load(action, args) {
-    var ck = 'hanaro.cache.' + action;
-    return api(action, args).then(function (d) {
-      LS.set(ck, JSON.stringify({ at: Date.now(), d: d })); return d;
-    }, function (e) {
-      var raw = LS.get(ck);
-      if (raw && /Cannot reach/.test(e.message)) {
-        var c = JSON.parse(raw);
-        banner('Offline. Showing what was saved ' + ago(new Date(c.at).toISOString()) + '.', true, 6000);
-        return c.d;
-      }
-      throw e;
+  /* ---------- data: show the saved copy first, refresh behind it ---------- */
+  function snap(k) { var raw = LS.get('hanaro.cache.' + k); try { return raw ? JSON.parse(raw) : null; } catch (e) { return null; } }
+  function save(k, d) { LS.set('hanaro.cache.' + k, JSON.stringify({ at: Date.now(), d: d })); }
+  function patch(k, fn) { var c = snap(k); if (!c) return; fn(c.d); save(k, c.d); }
+  function readQueue() { try { return JSON.parse(LS.get('hanaro.queue') || '[]'); } catch (e) { return []; } }
+  var queue = readQueue(), flushing = null, bootP = null;
+  function saveQueue() { LS.set('hanaro.queue', JSON.stringify(queue)); setPill(); }
+  /** Changes are saved on this device first, then sent. If there is no connection they wait and retry. */
+  function send(action, args, label) { queue.push({ action: action, args: args, label: label }); saveQueue(); return flush(); }
+  function flush() {
+    if (flushing) return flushing;
+    flushing = (function next() {
+      if (!queue.length) return Promise.resolve(true);
+      var q = queue[0];
+      return api(q.action, q.args).then(function () { queue.shift(); saveQueue(); return next(); }, function (e) {
+        if (/Cannot reach/.test(e.message)) return false;
+        queue.shift(); saveQueue();
+        banner('Could not save ' + (q.label || 'a change') + '. ' + e.message + ' Please enter it again.', true, 0);
+        return next();
+      });
+    })().then(function (ok) { flushing = null; return ok; });
+    return flushing;
+  }
+  function useCats(c) { state.cats = c.categories; state.accounts = c.accounts; }
+  function setWho(u) { if (u) { $('whoName').textContent = u.name; $('avatar').textContent = u.name.slice(0, 2).toUpperCase(); } }
+  /** One request brings Home, Review, Activity and the category list. */
+  function refresh() {
+    return flush().then(function () {
+      if (queue.length) throw new Error('Cannot reach Hanaro. Check your internet connection.');
+      if (!bootP) bootP = api('bootstrap').then(function (b) {
+        ['home', 'review', 'activity', 'categories'].forEach(function (k) { save(k, b[k]); });
+        useCats(b.categories); setWho(b.home.user); state.counts.review = b.home.reviewCount; renderNav();
+        bootP = null; return b;
+      }, function (e) {
+        bootP = null;
+        if (/does not know/.test(e.message)) throw new Error('Hanaro needs its server update. Paste the newest API code and redeploy it.');
+        throw e;
+      });
+      return bootP;
     });
+  }
+  function editing(v) { var a = document.activeElement; return !!(a && v.contains(a) && /INPUT|SELECT|TEXTAREA/.test(a.tagName)); }
+  function localIso() {
+    var d = new Date(), z = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()) + 'T' + z(d.getHours()) + ':' + z(d.getMinutes()) + ':' + z(d.getSeconds()) + '+07:00';
   }
 
   /* ---------- setup ---------- */
@@ -114,21 +145,37 @@
     });
   }
   function setPill(iso, err) {
-    var p = $('syncPill'), a = ago(iso);
-    var stale = !iso || (Date.now() - Date.parse(iso)) > 2 * 3600 * 1000;
-    p.textContent = err ? 'Not synced' : (a ? 'Synced ' + a : 'No sync yet');
-    p.className = 'pill' + (stale || err ? ' bad' : '');
+    if (iso !== undefined) state.sync = iso;
+    if (err !== undefined) state.err = err;
+    var p = $('syncPill'), a = ago(state.sync);
+    var stale = !state.sync || (Date.now() - Date.parse(state.sync)) > 2 * 3600 * 1000;
+    if (queue.length) { p.textContent = 'Sending ' + queue.length + '…'; p.className = 'pill'; return; }
+    if (state.busy) { p.textContent = 'Updating…'; p.className = 'pill'; return; }
+    p.textContent = state.err ? 'Not synced' : (a ? 'Synced ' + a : 'No sync yet');
+    p.className = 'pill' + (stale || state.err ? ' bad' : '');
   }
   function go(v) { state.view = v; renderNav(); render(); window.scrollTo(0, 0); }
   document.querySelectorAll('nav [data-go]').forEach(function (b) { b.addEventListener('click', function () { go(b.getAttribute('data-go')); }); });
   $('syncPill').addEventListener('click', function () { render(); });
 
+  var TITLE = 'font-size:30px;font-weight:300;letter-spacing:-.5px;margin:6px 0 0 2px';
+  function usable(name, c) { return c && (name !== 'home' || c.d.spentToday !== undefined); }
   function render() {
-    var v = $('view');
-    v.innerHTML = '<div class="empty">Loading…</div>';
-    var f = { home: renderHome, review: renderReview, activity: renderActivity, status: renderStatus }[state.view];
-    f(v).catch(function (e) {
+    var v = $('view'), name = state.view, tok = ++state.token;
+    if (name === 'status') return renderStatus(v, tok);
+    var paint = { home: paintHome, review: paintReview, activity: paintActivity }[name];
+    var c = snap(name); if (!usable(name, c)) c = null;
+    if (c) paint(v, c.d); else v.innerHTML = '<div class="empty">Loading…</div>';
+    state.busy = true; setPill();
+    refresh().then(function () {
+      state.busy = false; setPill(undefined, false);
+      if (tok !== state.token || editing(v)) return;
+      paint(v, snap(name).d);
+    }, function (e) {
+      state.busy = false; setPill(undefined, true);
+      if (tok !== state.token) return;
       if (/not recognised/.test(e.message)) { LS.del('hanaro.key'); showSetup(e.message); return; }
+      if (c) { banner(/Cannot reach/.test(e.message) ? 'Offline. Showing what was saved ' + ago(new Date(snap(name).at).toISOString()) + '.' : e.message, true, 6000); return; }
       v.innerHTML = '<div class="card"><div class="label">Could not load</div><p class="note">' + esc(e.message) + '</p><button class="ghost small" id="retry">Try again</button></div>';
       $('retry').addEventListener('click', render);
       banner(e.message, true);
@@ -136,46 +183,36 @@
   }
 
   /* ---------- Home ---------- */
-  function renderHome(v) {
-    return load('home').then(function (h) {
-      state.counts.review = h.reviewCount; renderNav(); LS.set('hanaro.lastsync', h.lastSync || ''); setPill(h.lastSync);
-      $('whoName').textContent = h.user.name; $('avatar').textContent = h.user.name.slice(0, 2).toUpperCase();
-      var html = '<div style="font-size:30px;font-weight:300;letter-spacing:-.5px;margin:6px 0 0 2px">Today</div>';
-      if (h.safeToSpend === null) {
-        html += '<div class="card"><div class="label">Safe to spend</div><p class="note" style="font-size:14px;color:var(--text);margin-top:6px">To show your daily number, Hanaro needs today\'s bank balances' + (h.needs.indexOf('caps') !== -1 ? ' and your bucket caps' : '') + '.</p><button class="primary small" data-go-status style="margin-top:10px">Open Status to add them</button></div>';
-      } else {
-        var b = bigParts(h.safeToSpend);
-        html += '<div class="card"><div class="label">Safe to spend</div><div class="big"><span class="rp">Rp</span><span class="n">' + esc(b.n) + '</span><span class="z">' + esc(b.z) + '</span></div>' +
-          '<div style="font-size:14px">per day for the next ' + h.days + ' day' + (h.days === 1 ? '' : 's') + '</div><div class="rule"></div>' +
-          h.notes.map(function (n) { return '<p class="note">' + esc(n) + '</p>'; }).join('') + '</div>';
-      }
-      if (h.heldByType && h.heldByType.length) {
-        html += '<div class="card"><div class="label">Held for others</div><div class="stat' + (h.heldTotal < 0 ? ' bad' : '') + '" style="margin-top:2px">' + rp(h.heldTotal) + '</div>' +
-          h.heldByType.map(function (x) { return '<div class="kv"><span>' + esc(x.type) + '</span><span class="' + (x.amount < 0 ? 'bad' : 'muted') + '">' + rp(x.amount) + '</span></div>'; }).join('') +
-          '<p class="note">' + (h.heldTotal < 0 ? 'You have sent out more than you were given. An entry for money received may be missing.' : 'This is other people\'s money. It is not counted in Safe to spend.') + '</p></div>';
-      }
-      var down = h.debtDown >= 0;
-      html += '<div class="card"><div class="two"><div><div class="tiny muted">' + (down ? 'Debt down this month' : 'Debt up this month') + '</div><div class="stat ' + (down ? 'good' : 'bad') + '">' + rpShort(Math.abs(h.debtDown)) + '</div></div>' +
-        '<div class="sep"></div><div><div class="tiny muted">Debt cost this month</div><div class="stat ' + (h.debtCost === null ? '' : 'bad') + '">' + (h.debtCost === null ? '–' : rpShort(h.debtCost)) + '</div></div></div>' +
-        (h.debtCost === null ? '<p class="note" style="margin-top:8px">Debt cost appears once your debts and rates are added.</p>' : '') + '</div>';
-      html += '<div class="card" style="gap:11px"><div class="label">Buckets this month</div>';
-      if (!h.buckets.length) html += '<p class="note">No buckets yet.</p>';
-      h.buckets.forEach(function (k) {
-        var hot = k.pct !== null && k.pct >= 80, w = k.pct === null ? 0 : Math.min(100, k.pct);
-        html += '<div class="bar' + (hot ? ' hot' : '') + '"><span class="nm">' + esc(k.bucket) + '</span><div class="track"><div class="fill" style="width:' + w + '%"></div></div><span class="pc">' + (k.pct === null ? rpShort(k.spent) : k.pct + '%') + '</span></div>';
-      });
-      html += '<div class="rule" style="margin:2px 0"></div><div class="insight"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0B6F7A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex:none;margin-top:1px"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></svg><p class="note">' + esc(h.insight) + '</p></div></div>';
-      if (h.reviewCount) html += '<button class="ghost" data-go-review>' + h.reviewCount + ' item' + (h.reviewCount === 1 ? '' : 's') + ' to review' + (h.payNowCount ? ' (' + h.payNowCount + ' to pay now)' : '') + '</button>';
-      v.innerHTML = html;
-      var s = v.querySelector('[data-go-status]'); if (s) s.addEventListener('click', function () { go('status'); });
-      var r = v.querySelector('[data-go-review]'); if (r) r.addEventListener('click', function () { go('review'); });
-    });
+  function paintHome(v, h) {
+    state.counts.review = h.reviewCount; renderNav(); LS.set('hanaro.lastsync', h.lastSync || ''); setPill(h.lastSync); setWho(h.user);
+    var b = bigParts(h.spentToday);
+    var html = '<div style="' + TITLE + '">Today</div>';
+    html += '<div class="card"><div class="label">Spent today</div><div class="big"><span class="rp">Rp</span><span class="n">' + esc(b.n) + '</span><span class="z">' + esc(b.z) + '</span></div>' +
+      '<div style="font-size:14px">' + (h.spentTodayCount ? h.spentTodayCount + ' purchase' + (h.spentTodayCount === 1 ? '' : 's') : 'Nothing spent yet today') + '</div><div class="rule"></div>' +
+      '<div class="two"><div><div class="tiny muted">This week</div><div class="stat">' + rpShort(h.spentWeek) + '</div></div><div class="sep"></div><div><div class="tiny muted">This month</div><div class="stat">' + rpShort(h.spentMonth) + '</div></div></div>' +
+      '<p class="note" style="margin-top:8px">About ' + rp(h.avgPerDay) + ' a day so far this month. Transfers, card payments, business accounts and money held for others are not counted.</p></div>';
+    if (h.toPayCount || h.billsWeek.length) {
+      html += '<div class="card"><div class="label">Left to pay</div>';
+      if (h.toPayCount) html += '<div class="kv"><span>Card charges to pay today (' + h.toPayCount + ')</span><b>' + rp(h.toPayTotal) + '</b></div>';
+      h.billsWeek.forEach(function (o) { html += '<div class="kv"><span>' + esc(o.name) + '<div class="sub">Due ' + dayLabel(o.due) + '</div></span><span>' + rp(o.amount) + '</span></div>'; });
+      if (h.toPayCount) html += '<button class="primary small" data-go-review style="margin-top:6px">Open the card charges</button>';
+      html += '</div>';
+    }
+    if (h.heldByType && h.heldByType.length) {
+      html += '<div class="card"><div class="label">Held for others</div><div class="stat' + (h.heldTotal < 0 ? ' bad' : '') + '" style="margin-top:2px">' + rp(h.heldTotal) + '</div>' +
+        h.heldByType.map(function (x) { return '<div class="kv"><span>' + esc(x.type) + '</span><span class="' + (x.amount < 0 ? 'bad' : 'muted') + '">' + rp(x.amount) + '</span></div>'; }).join('') +
+        '<p class="note">' + (h.heldTotal < 0 ? 'You have sent out more than you were given. An entry for money received may be missing.' : 'This is other people\'s money. It is not counted as yours.') + '</p></div>';
+    }
+    if (h.reviewCount) html += '<button class="ghost" data-go-review>' + h.reviewCount + ' item' + (h.reviewCount === 1 ? '' : 's') + ' need you</button>';
+    v.innerHTML = html;
+    v.querySelectorAll('[data-go-review]').forEach(function (r) { r.addEventListener('click', function () { go('review'); }); });
   }
 
   /* ---------- categories ---------- */
   function ensureCats() {
     if (state.cats) return Promise.resolve();
-    return load('categories').then(function (d) { state.cats = d.categories; state.accounts = d.accounts; });
+    var c = snap('categories'); if (c) { useCats(c.d); return Promise.resolve(); }
+    return refresh().then(function () {});
   }
   function opt(c, sel, withBucket) {
     return '<option value="' + esc(c.category) + '"' + (c.category === sel ? ' selected' : '') + '>' + esc(c.category) + (withBucket && c.bucket ? ' · ' + esc(c.bucket) : '') + '</option>';
@@ -191,20 +228,20 @@
 
   /* ---------- Review ---------- */
   var KIND = { pay_now: ['Pay now', 'pay'], confirm: ['New', 'new'], duplicate: ['Possible duplicate', 'dup'], unread: ['Could not read', 'unread'] };
-  function renderReview(v) {
-    return Promise.all([load('review'), ensureCats()]).then(function (res) {
-      var items = res[0].items.filter(function (i) { return !state.later[i.txn.id]; });
-      state.counts.review = items.length; renderNav(); setPill(LS.get('hanaro.lastsync') || null);
-      var n = { all: items.length };
+  function repaintReview(v) { paintReview(v, snap('review').d); }
+  function paintReview(v, data) {
+    ensureCats().then(function () {
+      var items = data.items.filter(function (i) { return !state.later[i.txn.id]; });
+      state.counts.review = items.length; renderNav(); var n = { all: items.length };
       Object.keys(KIND).forEach(function (k) { n[k] = items.filter(function (i) { return i.kind === k; }).length; });
       var tabs = [['all', 'All'], ['pay_now', 'Pay now'], ['duplicate', 'Duplicates'], ['unread', 'Unread']];
-      var html = '<div style="font-size:30px;font-weight:300;letter-spacing:-.5px;margin:6px 0 0 2px">Review</div><div class="chips">' +
+      var html = '<div style="' + TITLE + '">Review</div><div class="chips">' +
         tabs.map(function (t) { return '<button class="chip' + (state.filter === t[0] ? ' on' : '') + '" data-f="' + t[0] + '">' + t[1] + ' ' + n[t[0]] + '</button>'; }).join('') + '</div>';
       var shown = items.filter(function (i) { return state.filter === 'all' || i.kind === state.filter; });
       if (!shown.length) html += '<div class="card empty">' + (items.length ? 'Nothing here.' : 'All clear. Nothing needs you right now.') + '</div>';
       shown.forEach(function (i) { html += reviewCard(i); });
       v.innerHTML = html;
-      v.querySelectorAll('[data-f]').forEach(function (b) { b.addEventListener('click', function () { state.filter = b.getAttribute('data-f'); renderReview(v); }); });
+      v.querySelectorAll('[data-f]').forEach(function (b) { b.addEventListener('click', function () { state.filter = b.getAttribute('data-f'); repaintReview(v); }); });
       v.querySelectorAll('[data-act]').forEach(function (b) { b.addEventListener('click', function () { reviewAction(b, v); }); });
     });
   }
@@ -237,11 +274,11 @@
     var err = card.querySelector('[data-err]');
     function fail(m) { if (err) err.textContent = m; else banner(m, true); }
     if (err) err.textContent = '';
-    if (act === 'later') { state.later[id] = true; renderReview(v); return; }
-    var call;
-    if (act === 'paid') call = api('mark_paid', { id: id });
-    else if (act === 'keep_both') call = api('keep_both', { id: id });
-    else if (act === 'merge_dup') call = api('merge_dup', { id: id });
+    if (act === 'later') { state.later[id] = true; repaintReview(v); return; }
+    var action, args, label = 'that change';
+    if (act === 'paid') { action = 'mark_paid'; args = { id: id }; }
+    else if (act === 'keep_both') { action = 'keep_both'; args = { id: id }; }
+    else if (act === 'merge_dup') { action = 'merge_dup'; args = { id: id }; }
     else {
       var cat = card.querySelector('[data-f-cat]').value;
       if (!cat) return fail('Choose a category first.');
@@ -253,17 +290,23 @@
         if (!p) return fail('Type what it was for.');
         changes.idr_amount = a; changes.payee = p;
       }
-      call = api('update_txn', { id: id, changes: changes, confirm: true });
+      action = 'update_txn'; args = { id: id, changes: changes, confirm: true };
     }
-    btn.disabled = true;
-    call.then(function () { banner('Saved'); renderReview(v); }, function (e) { btn.disabled = false; fail(e.message); });
+    // Show the result at once, send in the background.
+    var gone = null;
+    patch('review', function (d) { d.items = d.items.filter(function (i) { if (i.txn.id === id) gone = i; return i.txn.id !== id; }); });
+    patch('home', function (h) {
+      h.reviewCount = Math.max(0, h.reviewCount - 1);
+      if (act === 'paid' && gone && gone.txn.amount) { h.toPayCount = Math.max(0, h.toPayCount - 1); h.toPayTotal = Math.max(0, h.toPayTotal - gone.txn.amount); }
+    });
+    banner('Saved'); repaintReview(v);
+    send(action, args, label).then(function (ok) { if (ok && !queue.length) render(); });
   }
 
   /* ---------- Activity ---------- */
-  function renderActivity(v) {
-    return load('activity').then(function (d) {
-      setPill(LS.get('hanaro.lastsync') || null);
-      var html = '<div style="font-size:30px;font-weight:300;letter-spacing:-.5px;margin:6px 0 0 2px">Activity</div>';
+  function paintActivity(v, d) {
+    (function () {
+      var html = '<div style="' + TITLE + '">Activity</div>';
       if (!d.items.length) html += '<div class="card empty">Nothing yet.</div>';
       var last = '', open = false;
       d.items.forEach(function (t) {
@@ -282,15 +325,29 @@
       });
       if (open) html += '</div>';
       v.innerHTML = html;
-    });
+    })();
   }
 
   /* ---------- Status ---------- */
-  function renderStatus(v) {
-    return load('status').then(function (s) {
+  function renderStatus(v, tok) {
+    var c = snap('status');
+    if (c) paintStatus(v, c.d); else v.innerHTML = '<div class="empty">Loading…</div>';
+    state.busy = true; setPill();
+    flush().then(function () { return api('status'); }).then(function (s) {
+      save('status', s); state.busy = false; setPill(undefined, false);
+      if (tok === state.token && !editing(v)) paintStatus(v, s);
+    }, function (e) {
+      state.busy = false; setPill(undefined, true);
+      if (tok !== state.token) return;
+      if (c) banner(e.message, true, 6000);
+      else { v.innerHTML = '<div class="card"><div class="label">Could not load</div><p class="note">' + esc(e.message) + '</p></div>'; banner(e.message, true); }
+    });
+  }
+  function paintStatus(v, s) {
+    (function () {
       LS.set('hanaro.lastsync', s.lastSync || ''); setPill(s.lastSync);
       var stale = !s.lastSync || (Date.now() - Date.parse(s.lastSync)) > 2 * 3600 * 1000;
-      var html = '<div style="font-size:30px;font-weight:300;letter-spacing:-.5px;margin:6px 0 0 2px">Status</div>';
+      var html = '<div style="' + TITLE + '">Status</div>';
       html += '<div class="card"><div class="label">Email sync</div><div class="kv"><span><span class="dot' + (stale ? ' bad' : '') + '"></span>' + (s.lastSync ? 'Last sync ' + esc(ago(s.lastSync)) : 'No sync yet') + '</span></div>' +
         (s.lastSyncError ? '<p class="note" style="color:var(--warn)">Last error: ' + esc(s.lastSyncError) + '</p>' : '') +
         '<div class="kv"><span>Emails I could not read</span><b>' + s.unreadable + '</b></div><div class="kv"><span>Last backup</span><span>' + esc(s.lastBackup ? ago(s.lastBackup) : 'none yet') + '</span></div></div>';
@@ -315,13 +372,13 @@
           Promise.all(inputs.map(function (i) {
             var a = {}; a[field[0]] = i.getAttribute(attr); a[field[1]] = Number(i.value.replace(/[^\d]/g, ''));
             return api(action, a);
-          })).then(function () { banner(label + ' saved'); renderStatus(v); }, function (e) { b.disabled = false; err.textContent = e.message; });
+          })).then(function () { banner(label + ' saved'); render(); }, function (e) { b.disabled = false; err.textContent = e.message; });
         });
       }
       saver('saveBal', 'data-bal', '[data-err-bal]', 'set_balance', ['account', 'amount'], 'Balances');
       saver('saveCap', 'data-cap', '[data-err-cap]', 'set_cap', ['bucket', 'cap'], 'Caps');
-      $('signOut').addEventListener('click', function () { if (confirm('Disconnect this device from Hanaro?')) { LS.del('hanaro.key'); LS.del('hanaro.url'); location.reload(); } });
-    });
+      $('signOut').addEventListener('click', function () { if (confirm('Disconnect this device from Hanaro?')) { ['key', 'url', 'queue', 'lastsync'].forEach(function (k) { LS.del('hanaro.' + k); }); ['home', 'review', 'activity', 'categories', 'status'].forEach(function (k) { LS.del('hanaro.cache.' + k); }); location.reload(); } });
+    })();
   }
 
   /* ---------- Add ---------- */
@@ -359,17 +416,33 @@
     if (k === 'held' && !cat) { m.textContent = 'Choose what kind of money this is.'; return; }
     var newName = $('addNewType').value.trim();
     if (k === 'held' && cat === '__new' && !newName) { m.textContent = 'Type a name for the new kind, for example Seminar fees.'; return; }
-    $('addSave').disabled = true;
-    var pre = (k === 'held' && cat === '__new') ? api('add_held_type', { name: newName }).then(function (r) { cat = r.category; state.cats = null; }) : Promise.resolve();
-    pre.then(function () {
-      return api('add_txn', { kind: { spent: 'purchase', got: 'income', held: 'held' }[k], amount: amt, payee: payee, category: cat, account: $('addAcc').value, memo: $('addMemo').value.trim() });
-    }).then(function () { closeAdd(); banner('Saved'); render(); }, function (e) { m.textContent = e.message; })
-      .then(function () { $('addSave').disabled = false; });
+    // Saved on this device right away; sent in the background.
+    var kind = { spent: 'purchase', got: 'income', held: 'held' }[k], acct = $('addAcc').value, memo = $('addMemo').value.trim();
+    var label = rp(amt) + ' ' + payee;
+    if (k === 'held' && cat === '__new') {
+      cat = 'Held: ' + newName.replace(/^Held:\s*/i, '').trim();
+      if (!state.cats.some(function (c) { return c.category === cat; })) state.cats.push({ category: cat, bucket: '', held: true });
+      var cc = snap('categories'); if (cc) { cc.d.categories = state.cats; save('categories', cc.d); }
+      queue.push({ action: 'add_held_type', args: { name: newName }, label: 'the new kind ' + newName });
+    }
+    var now = localIso();
+    patch('activity', function (d) {
+      d.items.unshift({ id: 'local_' + Date.now(), date: now.slice(0, 10), timestamp: now, type: kind === 'purchase' ? 'purchase' : kind === 'income' ? 'income' : 'held_in', amount: amt, account: acct, payee: payee, category: kind === 'income' ? 'Income' : cat, bucket: '', status: 'confirmed', memo: memo, source: 'manual', payNow: false, paid: false, links: '', who: '' });
+    });
+    if (kind === 'purchase') patch('home', function (h) {
+      h.spentToday += amt; h.spentWeek += amt; h.spentMonth += amt; h.spentTodayCount += 1;
+      h.avgPerDay = Math.round(h.spentMonth / Math.max(1, Number(now.slice(8, 10))));
+    });
+    closeAdd(); banner('Saved'); if (!$('view').querySelector('input:focus')) { var c0 = snap(state.view); if (c0 && state.view !== 'status') ({ home: paintHome, review: paintReview, activity: paintActivity })[state.view]($('view'), c0.d); }
+    send('add_txn', { kind: kind, amount: amt, payee: payee, category: cat, account: acct, memo: memo }, label).then(function (ok) { if (ok && !queue.length) render(); });
   });
 
   /* ---------- start ---------- */
   function start() {
-    $('setup').hidden = true; $('app').hidden = false; $('nav').hidden = false; renderNav(); render();
+    $('setup').hidden = true; $('app').hidden = false; $('nav').hidden = false;
+    var hc = snap('home'); if (hc && hc.d.user) { setWho(hc.d.user); state.counts.review = hc.d.reviewCount || 0; }
+    var cc = snap('categories'); if (cc) useCats(cc.d);
+    renderNav(); render();
   }
   document.addEventListener('visibilitychange', function () { if (!document.hidden && conf().key && $('sheet').hidden) render(); });
   window.addEventListener('error', function (e) { banner('Something broke in the app: ' + e.message, true); });

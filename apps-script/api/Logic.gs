@@ -122,6 +122,31 @@ function monthName_(iso) {
   return Number(iso.slice(8, 10)) + ' ' + n[Number(iso.slice(5, 7)) - 1];
 }
 
+
+/** Monday of the week containing the ISO date. */
+function weekStart_(iso) {
+  var dow = new Date(Date.parse(day_(iso) + 'T00:00:00Z')).getUTCDay(); // 0 = Sunday
+  return addDays_(iso, -((dow + 6) % 7));
+}
+
+/**
+ * What the family actually spent: purchases that are not void, unread or duplicate.
+ * Business (PT) accounts, transfers, card payments and money held for others are not included.
+ */
+function spendTotals_(txns, accounts, today) {
+  var pt = {}; accounts.forEach(function (a) { if (a.entity === 'PT') pt[a.account] = true; });
+  var wk = weekStart_(today), mo = today.slice(0, 7), r = { today: 0, week: 0, month: 0, todayCount: 0 };
+  txns.forEach(function (t) {
+    if (!countsAsSpend_(t) || pt[t.account]) return;
+    var d = day_(t.timestamp || t.date), n = num_(t.idr_amount);
+    if (d.slice(0, 7) === mo) r.month += n;
+    if (d >= wk && d <= today) r.week += n;
+    if (d === today) { r.today += n; r.todayCount++; }
+  });
+  r.avgPerDay = Math.round(r.month / Math.max(1, Number(today.slice(8, 10))));
+  return r;
+}
+
 /** Everything the Home screen shows. d = { txns, accounts, buckets, balances, bills, debts, summary, today } */
 function computeHome(d) {
   var today = d.today, month = today.slice(0, 7);
@@ -196,7 +221,14 @@ function computeHome(d) {
     : (capped.length ? 'Every bucket is under 80%. Nice and steady.' : 'Add bucket caps in Status to see how each area is doing.');
 
   var items = reviewItems(d.txns);
+  var spend = spendTotals_(d.txns, d.accounts, today);
+  var settledNow = settledPayNow(d.txns);
+  var owed = d.txns.filter(function (t) { return liveTxn_(t) && flagsOf_(t).indexOf('pay_now') !== -1 && !settledNow[t.id]; });
+  var billsWeek = obligationsUntil_(today, addDays_(today, 8), d.bills || [], d.debts || []);
   return {
+    spentToday: spend.today, spentTodayCount: spend.todayCount, spentWeek: spend.week, spentMonth: spend.month, avgPerDay: spend.avgPerDay,
+    toPayTotal: owed.reduce(function (a, t) { return a + num_(t.idr_amount); }, 0), toPayCount: owed.length,
+    billsWeek: billsWeek, billsWeekTotal: billsWeek.reduce(function (a, o) { return a + o.amount; }, 0),
     today: today, horizon: horizon, days: days, safeToSpend: safe, needs: needs, notes: notes,
     buckets: buckets, insight: insight, cash: counted ? cash : null, obligations: ob,
     heldTotal: heldTotal, heldByType: heldByType,
@@ -218,5 +250,5 @@ function ruleKey(payee) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { computeHome: computeHome, reviewItems: reviewItems, settledPayNow: settledPayNow, bucketForCategory: bucketForCategory, ruleKey: ruleKey, nextDue_: nextDue_, firstOfNextMonth_: firstOfNextMonth_ };
+  module.exports = { spendTotals_: spendTotals_, weekStart_: weekStart_, computeHome: computeHome, reviewItems: reviewItems, settledPayNow: settledPayNow, bucketForCategory: bucketForCategory, ruleKey: ruleKey, nextDue_: nextDue_, firstOfNextMonth_: firstOfNextMonth_ };
 }

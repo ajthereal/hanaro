@@ -212,5 +212,28 @@ eq('held purchase on a card still counts as card debt', heldCard.debtDown, 20000
 const noHeld = L.computeHome(base);
 eq('nothing held means no held card', [noHeld.heldTotal, noHeld.heldByType], [0, []]);
 
+// spent today / week / month
+const sp = L.computeHome(Object.assign({}, base, {
+  accounts: base.accounts.concat([{ account: 'PT Bank', type: 'bank', entity: 'PT', allowed_for_new_spend: 'N' }]),
+  txns: base.txns.concat([
+    T({ id: 's1', idr_amount: 100000, timestamp: '2026-11-20T08:00:00+07:00' }),
+    T({ id: 's2', idr_amount: 50000, status: 'confirmed', timestamp: '2026-11-20T09:30:00+07:00' }),
+    T({ id: 's3', idr_amount: 200000, timestamp: '2026-11-17T12:00:00+07:00' }),
+    T({ id: 's4', idr_amount: 900000, account: 'PT Bank', timestamp: '2026-11-20T10:00:00+07:00' }),
+    T({ id: 's5', idr_amount: 700000, txn_type: 'held_out', status: 'confirmed', category: 'Held: Customer order', timestamp: '2026-11-20T11:00:00+07:00' }),
+    T({ id: 's6', idr_amount: 80000, status: 'needs_review', timestamp: '2026-11-20T12:00:00+07:00' })
+  ])
+}));
+eq('spent today counts own purchases only', [sp.spentToday, sp.spentTodayCount], [150000, 2]);
+eq('spent this week starts on Monday', sp.spentWeek, 150000 + 200000);
+eq('spent this month', sp.spentMonth, 1000000 + 150000 + 200000);
+eq('average per day this month', sp.avgPerDay, Math.round(1350000 / 20));
+eq('week start is Monday', [L.weekStart_('2026-11-22'), L.weekStart_('2026-11-16')], ['2026-11-16', '2026-11-16']);
+const owe = L.computeHome(Object.assign({}, base, { txns: base.txns.concat([
+  T({ id: 'o1', idr_amount: 120000, flags: 'pay_now', timestamp: '2026-11-20T08:00:00+07:00' }),
+  T({ id: 'o2', idr_amount: 60000, flags: 'pay_now,paid', timestamp: '2026-11-20T09:00:00+07:00' })]) }));
+eq('left to pay = unpaid pay-now charges', [owe.toPayTotal, owe.toPayCount], [120000, 1]);
+eq('bills due within a week', owe.billsWeek.map((b) => b.name), ['Internet']);
+
 console.log(failed ? '\n' + failed + ' FAILED' : '\nAll passed');
 process.exit(failed ? 1 : 0);

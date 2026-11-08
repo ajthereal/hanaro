@@ -130,6 +130,7 @@ function handle_(req, who) {
     h.user = { name: NAMES[who], role: role };
     return h;
   }
+  if (a === 'bootstrap') return bootstrap_(book, who);
   if (a === 'review') {
     var d2 = data_(book, who), settled = settledPayNow(d2.txns), byId = {};
     d2.txns.forEach(function (t) { byId[t.id] = t; });
@@ -321,4 +322,25 @@ function addTxn_(book, who, req) {
   }]);
   audit_(book, NAMES[who], 'add', 'Transactions', id, '', '', amt);
   return { id: id };
+}
+
+
+/** Everything the app screens need, in one request. Each sheet is read once. */
+function bootstrap_(book, who) {
+  var d = data_(book, who), role = ROLES[who];
+  var home = computeHome(d); home.user = { name: NAMES[who], role: role };
+  var settled = settledPayNow(d.txns), byId = {};
+  d.txns.forEach(function (t) { byId[t.id] = t; });
+  var review = reviewItems(d.txns).slice(0, 100).map(function (i) {
+    var o = { kind: i.kind, txn: slim_(i.t, settled) };
+    if (i.kind === 'duplicate' && byId[i.t.links_to_id]) o.other = slim_(byId[i.t.links_to_id], settled);
+    return o;
+  });
+  var activity = d.txns.filter(function (t) { return t.status !== 'void'; })
+    .sort(function (x, y) { return Date.parse(y.timestamp) - Date.parse(x.timestamp); }).slice(0, 80)
+    .map(function (t) { return slim_(t, settled); });
+  var cats = rows_(book, 'Categories').filter(function (c) { return String(c.active).toUpperCase() !== 'N'; })
+    .map(function (c) { return { category: c.category, bucket: c.bucket, held: String(c.counts_in_bucket).toUpperCase() === 'HELD' }; });
+  var accts = d.accounts.filter(function (x) { return x.active !== 'N' && x.entity !== 'PT' && (x.type === 'bank' || x.type === 'credit card'); }).map(function (x) { return x.account; });
+  return { home: home, review: { items: review }, activity: { items: activity }, categories: { categories: cats, accounts: accts } };
 }
