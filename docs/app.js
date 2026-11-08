@@ -193,7 +193,7 @@
       '<p class="note" style="margin-top:8px">About ' + rp(h.avgPerDay) + ' a day so far this month. Transfers, card payments, business accounts and money held for others are not counted.</p></div>';
     if (h.toPayCount || h.billsWeek.length) {
       html += '<div class="card"><div class="label">Left to pay</div>';
-      if (h.toPayCount) html += '<div class="kv"><span>Card charges to pay today (' + h.toPayCount + ')</span><b>' + rp(h.toPayTotal) + '</b></div>';
+      if (h.toPayCount) html += '<div class="kv"><span>Card charges not paid yet (' + h.toPayCount + ')</span><b>' + rp(h.toPayTotal) + '</b></div>';
       h.billsWeek.forEach(function (o) { html += '<div class="kv"><span>' + esc(o.name) + '<div class="sub">Due ' + dayLabel(o.due) + '</div></span><span>' + rp(o.amount) + '</span></div>'; });
       if (h.toPayCount) html += '<button class="primary small" data-go-review style="margin-top:6px">Open the card charges</button>';
       html += '</div>';
@@ -239,11 +239,69 @@
         tabs.map(function (t) { return '<button class="chip' + (state.filter === t[0] ? ' on' : '') + '" data-f="' + t[0] + '">' + t[1] + ' ' + n[t[0]] + '</button>'; }).join('') + '</div>';
       var shown = items.filter(function (i) { return state.filter === 'all' || i.kind === state.filter; });
       if (!shown.length) html += '<div class="card empty">' + (items.length ? 'Nothing here.' : 'All clear. Nothing needs you right now.') + '</div>';
-      shown.forEach(function (i) { html += reviewCard(i); });
+      // Bulk helpers so a backlog does not need one tap per item.
+      var payNow = shown.filter(function (i) { return i.kind === 'pay_now'; });
+      if (payNow.length >= 2) html += '<div class="card"><span class="tag pay">PAY NOW</span><div class="item-top"><div class="p">' + payNow.length + ' card charges not paid yet</div><div class="a">' + rp(payNow.reduce(function (a, i) { return a + (i.txn.amount || 0); }, 0)) + '</div></div><div class="sub">If you already paid these in myBCA, clear them all at once.</div><div class="btnrow"><button class="primary small" data-bulk="paid">Mark all as paid</button></div></div>';
+      var ready = shown.filter(function (i) { return i.kind === 'confirm' && i.txn.category; });
+      if (ready.length >= 2) html += '<div class="card"><span class="tag new">READY</span><div class="item-top"><div class="p">' + ready.length + ' already have a category</div></div><div class="sub">Looks right? Confirm them all in one tap.</div><div class="btnrow"><button class="primary small" data-bulk="ready">Confirm ' + ready.length + '</button></div></div>';
+      var groups = {}, order = [];
+      shown.forEach(function (i) {
+        if (i.kind === 'confirm' && !i.txn.category) { var k = payeeKey(i.txn.payee); if (k) { if (!groups[k]) { groups[k] = []; order.push(k); } groups[k].push(i); } }
+      });
+      var grouped = {};
+      order.forEach(function (k) { if (groups[k].length >= 2) { grouped[k] = true; html += groupCard(k, groups[k]); } });
+      shown.forEach(function (i) {
+        if (i.kind === 'pay_now' && payNow.length >= 2 && state.filter === 'all') return;
+        if (i.kind === 'confirm' && !i.txn.category && grouped[payeeKey(i.txn.payee)]) return;
+        html += reviewCard(i);
+      });
       v.innerHTML = html;
+      v.querySelectorAll('[data-bulk]').forEach(function (b) { b.addEventListener('click', function () { bulkAction(b, v, shown); }); });
+      v.querySelectorAll('[data-group-go]').forEach(function (b) { b.addEventListener('click', function () { groupAction(b, v, groups); }); });
       v.querySelectorAll('[data-f]').forEach(function (b) { b.addEventListener('click', function () { state.filter = b.getAttribute('data-f'); repaintReview(v); }); });
       v.querySelectorAll('[data-act]').forEach(function (b) { b.addEventListener('click', function () { reviewAction(b, v); }); });
     });
+  }
+  function payeeKey(p) { return String(p || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40); }
+  function groupCard(k, list) {
+    var total = list.reduce(function (a, i) { return a + (i.txn.amount || 0); }, 0);
+    return '<div class="card"><span class="tag new">SAME PLACE</span><div class="item-top"><div class="p">' + esc(list[0].txn.payee) + ' · ' + list.length + ' times</div><div class="a">' + rp(total) + '</div></div>' +
+      '<div class="sub">Pick one category for all of them. Hanaro remembers it for next time.</div>' +
+      '<select data-group-cat style="margin-top:8px">' + catOptions('') + '</select><p class="err" data-err></p>' +
+      '<div class="btnrow"><button class="primary small" data-group-go="' + esc(k) + '">Confirm all ' + list.length + '</button></div></div>';
+  }
+  /** Removes items from the saved copy at once and queues one change per item. */
+  function applyMany(items, makeCall, label) {
+    var ids = {}; items.forEach(function (i) { ids[i.txn.id] = i; });
+    var paidAmt = 0, paidN = 0;
+    if (label === 'paid') items.forEach(function (i) { paidN++; paidAmt += i.txn.amount || 0; });
+    patch('review', function (d) { d.items = d.items.filter(function (i) { return !ids[i.txn.id]; }); });
+    patch('home', function (h) {
+      h.reviewCount = Math.max(0, h.reviewCount - items.length);
+      if (label === 'paid') { h.toPayCount = Math.max(0, h.toPayCount - paidN); h.toPayTotal = Math.max(0, h.toPayTotal - paidAmt); }
+    });
+    items.forEach(function (i) { var c = makeCall(i); queue.push({ action: c.action, args: c.args, label: rp(i.txn.amount || 0) + ' ' + (i.txn.payee || '') }); });
+    saveQueue(); banner('Saved ' + items.length);
+    return flush().then(function (ok) { if (ok && !queue.length) render(); });
+  }
+  function bulkAction(btn, v, shown) {
+    var kind = btn.getAttribute('data-bulk');
+    if (kind === 'paid') {
+      var list = shown.filter(function (i) { return i.kind === 'pay_now'; });
+      if (!confirm('Mark ' + list.length + ' card charges as paid? Only do this if you already paid them.')) return;
+      applyMany(list, function (i) { return { action: 'mark_paid', args: { id: i.txn.id } }; }, 'paid');
+    } else {
+      var ready = shown.filter(function (i) { return i.kind === 'confirm' && i.txn.category; });
+      applyMany(ready, function (i) { return { action: 'update_txn', args: { id: i.txn.id, changes: { category: i.txn.category }, confirm: true } }; }, 'ready');
+    }
+    repaintReview(v);
+  }
+  function groupAction(btn, v, groups) {
+    var card = btn.closest('.card'), cat = card.querySelector('[data-group-cat]').value, err = card.querySelector('[data-err]');
+    if (!cat) { err.textContent = 'Choose a category first.'; return; }
+    var list = groups[btn.getAttribute('data-group-go')];
+    applyMany(list, function (i) { return { action: 'update_txn', args: { id: i.txn.id, changes: { category: cat }, confirm: true } }; }, 'group');
+    repaintReview(v);
   }
   function reviewCard(i) {
     var t = i.txn, k = KIND[i.kind], id = esc(t.id);
