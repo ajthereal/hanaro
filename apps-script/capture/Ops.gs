@@ -80,3 +80,21 @@ function backupRun() {
   while (files.hasNext()) { var f = files.next(); if (f.getDateCreated().getTime() < cutoff) f.setTrashed(true); }
   setSummary_(ss_().getSheetByName('Summary'), 'last_backup_ok', nowIso_());
 }
+
+/** Run once after adding TELEGRAM_TOKEN in Script Properties and sending a message in the group. Finds the group and sends a test. */
+function telegramSetup() {
+  var p = PropertiesService.getScriptProperties();
+  var token = p.getProperty('TELEGRAM_TOKEN');
+  if (!token) throw new Error('Add the script property TELEGRAM_TOKEN first (Project Settings, Script Properties).');
+  var res = UrlFetchApp.fetch('https://api.telegram.org/bot' + token + '/getUpdates', { muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) throw new Error('Telegram refused the token (' + res.getResponseCode() + '). Check that it was copied in full.');
+  var updates = JSON.parse(res.getContentText()).result || [];
+  var chat = null;
+  updates.forEach(function (u) {
+    var c = (u.message && u.message.chat) || (u.my_chat_member && u.my_chat_member.chat);
+    if (c && (c.type === 'group' || c.type === 'supergroup')) chat = c;
+  });
+  if (!chat) throw new Error('No group found. Send a message in the group that has the bot, then run this again.');
+  p.setProperty('TELEGRAM_CHAT', String(chat.id));
+  if (!telegram_('Hanaro is connected. Alerts will arrive here.')) throw new Error('The group was found but the test message failed. See the Log tab in the Sheet.');
+}
