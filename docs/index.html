@@ -56,28 +56,33 @@
 
 <div id="sheetBack" hidden></div>
 <section id="sheet" hidden role="dialog" aria-modal="true" aria-label="Add transaction">
-  <div class="grab" aria-hidden="true"></div>
-  <div class="seg" role="tablist">
-    <button id="kindSpent" class="on" role="tab">Spent</button>
-    <button id="kindGot" role="tab">Received</button>
-    <button id="kindHeld" role="tab">Held for others</button>
+  <div class="addtop">
+    <button id="addCancel" class="roundx" aria-label="Close"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    <label for="addAmount" class="sr">Amount in rupiah</label>
+    <div class="amtwrap"><span class="amtrp">Rp</span><input id="addAmount" inputmode="numeric" autocomplete="off" placeholder="0"></div>
+    <div class="seg" role="tablist">
+      <button id="kindSpent" class="on" role="tab">Spent</button>
+      <button id="kindGot" role="tab">Received</button>
+      <button id="kindHeld" role="tab">Held for others</button>
+    </div>
   </div>
-  <label for="addAmount">Amount (Rp)</label>
-  <input id="addAmount" inputmode="numeric" autocomplete="off" placeholder="0">
-  <label for="addPayee" id="payeeLabel">Spent on</label>
-  <input id="addPayee" autocomplete="off" placeholder="For example, lunch at the market">
-  <div id="catWrap">
-    <label for="addCat" id="catLabel">Category</label>
-    <select id="addCat"></select>
-    <div id="newTypeWrap" hidden><label for="addNewType">Name of the new kind</label><input id="addNewType" autocomplete="off" placeholder="For example, Seminar fees"></div>
-    <p id="heldHint" class="note" hidden style="margin-top:8px">Money someone gave you to pass on. It is not your income and not counted in Safe to spend.</p>
+  <div class="fields">
+    <div class="field"><label for="addPayee" id="payeeLabel">Payee</label><input id="addPayee" autocomplete="off" autocapitalize="words" placeholder="Who or what">
+      <div id="payeeSug" class="sugs" hidden></div></div>
+    <button id="catBtn" class="field fbtn" type="button"><span class="fl" id="catLabel">Category</span><span class="fv" id="catVal">Choose</span><span class="chev" aria-hidden="true">›</span></button>
+    <div id="newTypeWrap" class="field" hidden><label for="addNewType">Name of the new kind</label><input id="addNewType" autocomplete="off" placeholder="For example, Seminar fees"></div>
+    <p id="heldHint" class="note" hidden>Money someone gave you to pass on. It is not your income and not counted as spending.</p>
+    <div class="field"><label for="addAcc" id="accLabel">Account</label><select id="addAcc"></select></div>
+    <div class="field"><label for="addMemo">Memo (optional)</label><input id="addMemo" autocomplete="off"></div>
   </div>
-  <label for="addAcc" id="accLabel">Paid from</label>
-  <select id="addAcc"></select>
-  <label for="addMemo">Note (optional)</label>
-  <input id="addMemo" autocomplete="off">
   <p id="addMsg" class="err" role="alert"></p>
-  <div class="row"><button id="addCancel" class="ghost">Cancel</button><button id="addSave" class="primary">Save</button></div>
+  <button id="addSave" class="primary savefab">Save</button>
+</section>
+
+<section id="picker" hidden role="dialog" aria-modal="true" aria-label="Choose a category">
+  <div class="pickhead"><button id="pickBack" class="roundx" aria-label="Back"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button><div class="pickttl" id="pickTitle">Category</div></div>
+  <input id="pickSearch" type="search" placeholder="Search" autocomplete="off">
+  <div id="pickList"></div>
 </section>
 
 <script src="app.js"></script>

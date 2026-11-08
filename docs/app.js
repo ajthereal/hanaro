@@ -440,42 +440,121 @@
   }
 
   /* ---------- Add ---------- */
+  function recentTxns() { var c = snap('activity'); return c ? c.d.items : []; }
+  function kindRows() {
+    var all = state.cats || [], held = state.kind === 'held';
+    return all.filter(function (c) { return held ? c.held : (!c.held && c.category !== 'Income'); });
+  }
+  function setCat(name) {
+    state.addCat = name;
+    var el = $('catVal');
+    if (!name) { el.textContent = 'Choose'; el.className = 'fv empty'; }
+    else if (name === '__new') { el.textContent = 'A new kind…'; el.className = 'fv'; }
+    else { el.textContent = name; el.className = 'fv'; }
+    $('newTypeWrap').hidden = name !== '__new';
+  }
+  function fmtAmt(el) {
+    var d = el.value.replace(/[^\d]/g, '');
+    el.value = d ? Number(d).toLocaleString('id-ID') : '';
+  }
   function openAdd() {
     ensureCats().then(function () {
-      $('addCat').innerHTML = catOptions('', 'spend');
-      $('addAcc').innerHTML = '<option value="">Not sure / cash</option>' + state.accounts.map(function (a) { return '<option>' + esc(a) + '</option>'; }).join('');
-      ['addAmount', 'addPayee', 'addMemo'].forEach(function (i) { $(i).value = ''; });
-      $('addMsg').textContent = ''; setKind('spent');
+      var last = LS.get('hanaro.lastacct') || '';
+      $('addAcc').innerHTML = '<option value="">Not sure / cash</option>' + state.accounts.map(function (a) { return '<option' + (a === last ? ' selected' : '') + '>' + esc(a) + '</option>'; }).join('');
+      ['addAmount', 'addPayee', 'addMemo', 'addNewType'].forEach(function (i) { $(i).value = ''; });
+      $('payeeSug').hidden = true; $('addMsg').textContent = ''; setKind('spent');
       $('sheetBack').hidden = false; $('sheet').hidden = false; setTimeout(function () { $('addAmount').focus(); }, 50);
     }, function (e) { banner(e.message, true); });
   }
-  function closeAdd() { $('sheet').hidden = true; $('sheetBack').hidden = true; }
+  function closeAdd() { $('sheet').hidden = true; $('sheetBack').hidden = true; $('picker').hidden = true; }
   function setKind(k) {
     state.kind = k;
     ['Spent:spent', 'Got:got', 'Held:held'].forEach(function (x) { var p = x.split(':'); $('kind' + p[0]).className = k === p[1] ? 'on' : ''; });
-    $('catWrap').hidden = k === 'got';
-    $('payeeLabel').textContent = k === 'spent' ? 'Spent on' : 'Received from';
+    $('catBtn').hidden = k === 'got';
+    $('payeeLabel').textContent = k === 'got' ? 'Received from' : 'Payee';
     $('catLabel').textContent = k === 'held' ? 'What kind of money' : 'Category';
-    $('accLabel').textContent = k === 'spent' ? 'Paid from' : 'Received into';
-    $('addCat').innerHTML = catOptions('', k === 'held' ? 'held' : 'spend');
-    $('newTypeWrap').hidden = true; $('heldHint').hidden = k !== 'held';
+    $('accLabel').textContent = k === 'got' ? 'Received into' : 'Account';
+    $('heldHint').hidden = k !== 'held'; setCat('');
   }
-  $('addCat').addEventListener('change', function () { $('newTypeWrap').hidden = $('addCat').value !== '__new'; });
+  /* Payee suggestions come from what you entered before; picking one fills the category and account too. */
+  function payeeSuggestions(q) {
+    q = q.toLowerCase().trim(); var seen = {}, out = [];
+    if (q.length < 2) return out;
+    recentTxns().forEach(function (t) {
+      var p = String(t.payee || ''), key = p.toLowerCase();
+      if (!p || seen[key] || key.indexOf(q) === -1) return;
+      seen[key] = 1; out.push(t);
+    });
+    return out.slice(0, 4);
+  }
+  var sugCache = [];
+  $('addPayee').addEventListener('input', function () {
+    sugCache = payeeSuggestions($('addPayee').value);
+    var box = $('payeeSug');
+    box.innerHTML = sugCache.map(function (t, i) { return '<button type="button" data-sug="' + i + '">' + esc(t.payee) + '</button>'; }).join('');
+    box.hidden = !sugCache.length;
+    box.querySelectorAll('[data-sug]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var t = sugCache[Number(b.getAttribute('data-sug'))];
+        $('addPayee').value = t.payee; box.hidden = true;
+        if (state.kind !== 'got' && t.category && kindRows().some(function (c) { return c.category === t.category; })) setCat(t.category);
+        if (t.account && state.accounts.indexOf(t.account) !== -1) $('addAcc').value = t.account;
+      });
+    });
+  });
+  /* Category picker: suggested first, then grouped. */
+  function pickList(q) {
+    q = (q || '').toLowerCase().trim();
+    var rows = kindRows(), held = state.kind === 'held', html = '';
+    function row(name, mark) { return '<button type="button" class="prow" data-cat="' + esc(name) + '"><span>' + esc(name.replace(/^Held:\s*/, '')) + '</span>' + (mark ? '<span class="ck">✓</span>' : '') + '</button>'; }
+    if (!q) {
+      var count = {};
+      recentTxns().forEach(function (t) { if (t.category && rows.some(function (c) { return c.category === t.category; })) count[t.category] = (count[t.category] || 0) + 1; });
+      var top = Object.keys(count).sort(function (a, b) { return count[b] - count[a]; }).slice(0, 5);
+      if (top.length) html += '<div class="pgroup">Suggested</div><div class="pcard">' + top.map(function (n) { return row(n, n === state.addCat); }).join('') + '</div>';
+    }
+    var groups = {}, order = [];
+    rows.forEach(function (c) {
+      if (q && c.category.toLowerCase().indexOf(q) === -1) return;
+      var g = held ? 'Held for others' : (c.bucket || 'Other');
+      if (!groups[g]) { groups[g] = []; order.push(g); }
+      groups[g].push(c);
+    });
+    order.forEach(function (g) { html += '<div class="pgroup">' + esc(g) + '</div><div class="pcard">' + groups[g].map(function (c) { return row(c.category, c.category === state.addCat); }).join('') + '</div>'; });
+    if (held && !q) html += '<div class="pcard" style="margin-top:14px"><button type="button" class="prow add" data-cat="__new">+ Add a new kind…</button></div>';
+    if (!order.length && q) html += '<p class="note" style="padding:14px 4px">Nothing matches "' + esc(q) + '".</p>';
+    $('pickList').innerHTML = html;
+    $('pickList').querySelectorAll('[data-cat]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        setCat(b.getAttribute('data-cat')); $('picker').hidden = true;
+        if (b.getAttribute('data-cat') === '__new') setTimeout(function () { $('addNewType').focus(); }, 50);
+      });
+    });
+  }
+  $('catBtn').addEventListener('click', function () {
+    $('pickTitle').textContent = state.kind === 'held' ? 'What kind of money' : 'Category';
+    $('pickSearch').value = ''; pickList(''); $('picker').hidden = false; $('picker').scrollTop = 0;
+  });
+  $('pickSearch').addEventListener('input', function () { pickList($('pickSearch').value); });
+  $('pickBack').addEventListener('click', function () { $('picker').hidden = true; });
+  $('addAmount').addEventListener('input', function () { fmtAmt($('addAmount')); });
+  $('addNewType').addEventListener('input', function () { $('addMsg').textContent = ''; });
   $('addBtn').addEventListener('click', openAdd);
   $('addCancel').addEventListener('click', closeAdd); $('sheetBack').addEventListener('click', closeAdd);
   $('kindSpent').addEventListener('click', function () { setKind('spent'); }); $('kindGot').addEventListener('click', function () { setKind('got'); });
   $('kindHeld').addEventListener('click', function () { setKind('held'); });
   $('addSave').addEventListener('click', function () {
-    var amt = Number($('addAmount').value.replace(/[^\d]/g, '')), payee = $('addPayee').value.trim(), cat = $('addCat').value, k = state.kind;
+    var amt = Number($('addAmount').value.replace(/[^\d]/g, '')), payee = $('addPayee').value.trim(), cat = state.addCat, k = state.kind;
     var m = $('addMsg'); m.textContent = '';
     if (!amt) { m.textContent = 'Type the amount as a number.'; return; }
-    if (!payee) { m.textContent = k === 'spent' ? 'Type who or what it was for.' : 'Type who it came from.'; return; }
+    if (!payee) { m.textContent = k === 'got' ? 'Type who it came from.' : 'Type who or what it was for.'; return; }
     if (k === 'spent' && !cat) { m.textContent = 'Choose a category.'; return; }
     if (k === 'held' && !cat) { m.textContent = 'Choose what kind of money this is.'; return; }
     var newName = $('addNewType').value.trim();
     if (k === 'held' && cat === '__new' && !newName) { m.textContent = 'Type a name for the new kind, for example Seminar fees.'; return; }
     // Saved on this device right away; sent in the background.
     var kind = { spent: 'purchase', got: 'income', held: 'held' }[k], acct = $('addAcc').value, memo = $('addMemo').value.trim();
+    LS.set('hanaro.lastacct', acct);
     var label = rp(amt) + ' ' + payee;
     if (k === 'held' && cat === '__new') {
       cat = 'Held: ' + newName.replace(/^Held:\s*/i, '').trim();
@@ -491,7 +570,8 @@
       h.spentToday += amt; h.spentWeek += amt; h.spentMonth += amt; h.spentTodayCount += 1;
       h.avgPerDay = Math.round(h.spentMonth / Math.max(1, Number(now.slice(8, 10))));
     });
-    closeAdd(); banner('Saved'); if (!$('view').querySelector('input:focus')) { var c0 = snap(state.view); if (c0 && state.view !== 'status') ({ home: paintHome, review: paintReview, activity: paintActivity })[state.view]($('view'), c0.d); }
+    closeAdd(); banner('Saved');
+    var c0 = snap(state.view); if (c0 && state.view !== 'status' && !editing($('view'))) ({ home: paintHome, review: paintReview, activity: paintActivity })[state.view]($('view'), c0.d);
     send('add_txn', { kind: kind, amount: amt, payee: payee, category: cat, account: acct, memo: memo }, label).then(function (ok) { if (ok && !queue.length) render(); });
   });
 
