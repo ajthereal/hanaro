@@ -38,14 +38,18 @@ function countsAsSpend_(t) {
 }
 
 /**
- * Pay-now purchases (cards that must be paid the same day) are settled when a card payment of
- * the same amount follows within 24 hours, or when the person marked them paid.
+ * Pay-now purchases (cards that must be paid the same day) are settled when
+ *  1. the person marked them paid, or
+ *  2. a card payment of the same amount follows within 24 hours, or
+ *  3. one lump-sum payment covers several of them: it equals all open charges up to that moment,
+ *     or the oldest charges added up in order (so paying everything at once is noticed).
  * Returns { purchaseId: true } for the settled ones.
  */
 function settledPayNow(txns) {
   var payments = txns.filter(function (t) { return t.txn_type === 'payment' && liveTxn_(t); })
-    .map(function (t) { return { t: t, ms: Date.parse(t.timestamp), used: false }; });
-  var out = {};
+    .map(function (t) { return { t: t, ms: Date.parse(t.timestamp), used: false }; })
+    .sort(function (a, b) { return a.ms - b.ms; });
+  var out = {}, open = [];
   txns.filter(function (t) { return liveTxn_(t) && flagsOf_(t).indexOf('pay_now') !== -1; })
     .sort(function (a, b) { return Date.parse(a.timestamp) - Date.parse(b.timestamp); })
     .forEach(function (p) {
@@ -56,7 +60,21 @@ function settledPayNow(txns) {
         if (q.used || num_(q.t.idr_amount) !== num_(p.idr_amount)) continue;
         if (q.ms >= pm - 3600000 && q.ms <= pm + 86400000) { q.used = true; out[p.id] = true; return; }
       }
+      open.push({ t: p, ms: pm });
     });
+  // Lump sums: only exact totals count, so a coincidence with a random mix of small charges cannot settle anything.
+  payments.forEach(function (q) {
+    if (q.used) return;
+    var amount = num_(q.t.idr_amount);
+    if (!amount) return;
+    var cand = open.filter(function (c) { return !out[c.t.id] && c.ms <= q.ms + 3600000; });
+    if (!cand.length) return;
+    var run = 0, hit = -1;
+    for (var k = 0; k < cand.length; k++) { run += num_(cand[k].t.idr_amount); if (run === amount) hit = k; }
+    if (hit === -1) return;
+    for (var m = 0; m <= hit; m++) out[cand[m].t.id] = true;
+    q.used = true;
+  });
   return out;
 }
 

@@ -195,7 +195,7 @@
       html += '<div class="card"><div class="label">Left to pay</div>';
       if (h.toPayCount) html += '<div class="kv"><span>Card charges not paid yet (' + h.toPayCount + ')</span><b>' + rp(h.toPayTotal) + '</b></div>';
       h.billsWeek.forEach(function (o) { html += '<div class="kv"><span>' + esc(o.name) + '<div class="sub">Due ' + dayLabel(o.due) + '</div></span><span>' + rp(o.amount) + '</span></div>'; });
-      if (h.toPayCount) html += '<button class="primary small" data-go-review style="margin-top:6px">Open the card charges</button>';
+      if (h.toPayCount) html += '<div class="btnrow"><button class="ghost small" data-go-review>See them</button><button class="primary small" data-paid-all>I paid them all</button></div><p class="note">Paid everything in one payment? Hanaro also notices a lump sum by itself when the bank email arrives.</p>';
       html += '</div>';
     }
     if (h.heldByType && h.heldByType.length) {
@@ -206,6 +206,14 @@
     if (h.reviewCount) html += '<button class="ghost" data-go-review>' + h.reviewCount + ' item' + (h.reviewCount === 1 ? '' : 's') + ' need you</button>';
     v.innerHTML = html;
     v.querySelectorAll('[data-go-review]').forEach(function (r) { r.addEventListener('click', function () { go('review'); }); });
+    var pa = v.querySelector('[data-paid-all]');
+    if (pa) pa.addEventListener('click', function () {
+      var rc = snap('review'), list = rc ? rc.d.items.filter(function (i) { return i.kind === 'pay_now'; }) : [];
+      if (!list.length) { banner('Open Review once so Hanaro can load the charges, then try again.', true); return; }
+      if (!confirm('Mark ' + list.length + ' card charges as paid? Only do this if you already paid them.')) return;
+      applyMany(list, function (i) { return { action: 'mark_paid', args: { id: i.txn.id } }; }, 'paid').then(function () {});
+      var c = snap('home'); if (c) paintHome(v, c.d);
+    });
   }
 
   /* ---------- categories ---------- */

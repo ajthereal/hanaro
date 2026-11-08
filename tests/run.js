@@ -235,5 +235,21 @@ const owe = L.computeHome(Object.assign({}, base, { txns: base.txns.concat([
 eq('left to pay = unpaid pay-now charges', [owe.toPayTotal, owe.toPayCount], [120000, 1]);
 eq('bills due within a week', owe.billsWeek.map((b) => b.name), ['Internet']);
 
+// lump-sum card payment settles several charges at once
+const lump = [
+  T({ id: 'l1', idr_amount: 100000, timestamp: '2026-11-05T09:00:00+07:00', flags: 'pay_now' }),
+  T({ id: 'l2', idr_amount: 150000, timestamp: '2026-11-05T15:00:00+07:00', flags: 'pay_now' }),
+  T({ id: 'l3', idr_amount: 125895, timestamp: '2026-11-06T11:00:00+07:00', flags: 'pay_now' }),
+  T({ id: 'l4', idr_amount: 40000, timestamp: '2026-11-07T08:00:00+07:00', flags: 'pay_now' })
+];
+const payAll = T({ id: 'pa', txn_type: 'payment', idr_amount: 415895, timestamp: '2026-11-07T20:00:00+07:00', account: 'Bank A' });
+eq('one lump sum settles all open charges', Object.keys(L.settledPayNow(lump.concat([payAll]))).sort(), ['l1', 'l2', 'l3', 'l4']);
+const payTwo = T({ id: 'pb', txn_type: 'payment', idr_amount: 250000, timestamp: '2026-11-07T20:00:00+07:00', account: 'Bank A' });
+eq('lump sum covering the oldest charges settles only those', Object.keys(L.settledPayNow(lump.concat([payTwo]))).sort(), ['l1', 'l2']);
+const payOdd = T({ id: 'pc', txn_type: 'payment', idr_amount: 300000, timestamp: '2026-11-07T20:00:00+07:00', account: 'Bank A' });
+eq('a payment that matches no total settles nothing', Object.keys(L.settledPayNow(lump.concat([payOdd]))), []);
+eq('charges made after the payment are not covered', Object.keys(L.settledPayNow(lump.concat([T({ id: 'pd', txn_type: 'payment', idr_amount: 415895, timestamp: '2026-11-06T20:00:00+07:00', account: 'Bank A' })]))), []);
+eq('lump sum leaves nothing to review', L.reviewItems(lump.concat([payAll])).filter((i) => i.kind === 'pay_now').length, 0);
+
 console.log(failed ? '\n' + failed + ' FAILED' : '\nAll passed');
 process.exit(failed ? 1 : 0);
