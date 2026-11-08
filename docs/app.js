@@ -10,7 +10,9 @@
   var state = { pick: { held: false, selected: '', onPick: function () {} }, geo: null, photo: null, token: 0, busy: false, err: false, sync: null, view: 'home', filter: 'all', later: {}, cats: null, accounts: [], kind: 'spent', counts: { review: 0 } };
 
   /* ---------- helpers ---------- */
-  function esc(s) { return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  /** Bank emails sometimes leave codes like &#x2F; in names. Turn them back into characters before showing. */
+  function unent(s) { return s.replace(/&#x([0-9a-f]+);/gi, function (m, h) { return String.fromCharCode(parseInt(h, 16)); }).replace(/&#(\d+);/g, function (m, d) { return String.fromCharCode(Number(d)); }).replace(/&amp;/g, '&'); }
+  function esc(s) { return unent(String(s === null || s === undefined ? '' : s)).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function rp(n) { return 'Rp ' + Math.round(n).toLocaleString('id-ID'); }
   function rpShort(n) {
     var a = Math.abs(n), s = n < 0 ? '-' : '';
@@ -269,6 +271,21 @@
 
   /* ---------- Review ---------- */
   var KIND = { pay_now: ['Pay now', 'pay'], confirm: ['New', 'new'], duplicate: ['Possible duplicate', 'dup'], unread: ['Could not read', 'unread'] };
+  /** Category button for Review cards. Opens the same picker as the Add screen. */
+  function catBtn(sel, attrs) {
+    return '<button type="button" class="fbtn cbtn" data-pickbtn data-val="' + esc(sel || '') + '"' + (attrs || '') + '><span class="fv' + (sel ? '' : ' empty') + '">' + (sel ? esc(sel.replace(/^Held:\s*/, 'Held: ')) : 'Choose a category') + '</span><span class="chev" aria-hidden="true">›</span></button>';
+  }
+  function wirePickBtns(root) {
+    root.querySelectorAll('[data-pickbtn]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        openPicker({ held: false, both: true, selected: b.getAttribute('data-val'), title: 'Category', noNew: true, onPick: function (name) {
+          b.setAttribute('data-val', name);
+          var fv = b.querySelector('.fv'); fv.textContent = name; fv.className = 'fv';
+          var er = b.closest('.card').querySelector('[data-err]'); if (er) er.textContent = '';
+        } });
+      });
+    });
+  }
   function repaintReview(v) { paintReview(v, snap('review').d); }
   function paintReview(v, data) {
     ensureCats().then(function () {
@@ -297,6 +314,7 @@
         html += reviewCard(i);
       });
       v.innerHTML = html;
+      wirePickBtns(v);
       v.querySelectorAll('[data-bulk]').forEach(function (b) { b.addEventListener('click', function () { bulkAction(b, v, shown); }); });
       v.querySelectorAll('[data-group-go]').forEach(function (b) { b.addEventListener('click', function () { groupAction(b, v, groups); }); });
       v.querySelectorAll('[data-f]').forEach(function (b) { b.addEventListener('click', function () { state.filter = b.getAttribute('data-f'); repaintReview(v); }); });
@@ -308,7 +326,7 @@
     var total = list.reduce(function (a, i) { return a + (i.txn.amount || 0); }, 0);
     return '<div class="card"><span class="tag new">SAME PLACE</span><div class="item-top"><div class="p">' + esc(list[0].txn.payee) + ' · ' + list.length + ' times</div><div class="a">' + rp(total) + '</div></div>' +
       '<div class="sub">Pick one category for all of them. Hanaro remembers it for next time.</div>' +
-      '<select data-group-cat style="margin-top:8px">' + catOptions('') + '</select><p class="err" data-err></p>' +
+      catBtn('', ' data-group-cat') + '<p class="err" data-err></p>' +
       '<div class="btnrow"><button class="primary small" data-group-go="' + esc(k) + '">Confirm all ' + list.length + '</button></div></div>';
   }
   /** Removes items from the saved copy at once and queues one change per item. */
@@ -338,7 +356,7 @@
     repaintReview(v);
   }
   function groupAction(btn, v, groups) {
-    var card = btn.closest('.card'), cat = card.querySelector('[data-group-cat]').value, err = card.querySelector('[data-err]');
+    var card = btn.closest('.card'), cat = card.querySelector('[data-group-cat]').getAttribute('data-val'), err = card.querySelector('[data-err]');
     if (!cat) { err.textContent = 'Choose a category first.'; return; }
     var list = groups[btn.getAttribute('data-group-go')];
     applyMany(list, function (i) { return { action: 'update_txn', args: { id: i.txn.id, changes: { category: cat }, confirm: true } }; }, 'group');
@@ -351,7 +369,7 @@
     if (i.kind === 'unread') {
       h += '<div class="item-top"><div class="p">' + esc(t.payee || 'Unreadable email') + '</div></div><div class="sub">' + esc(t.memo) + '</div>' +
         '<label>Amount (Rp)</label><input data-f-amount inputmode="numeric" placeholder="0"><label>What was it</label><input data-f-payee value="' + esc(t.payee) + '">' +
-        '<label>Category</label><select data-f-cat>' + catOptions('') + '</select><p class="err" data-err></p>' +
+        '<label>Category</label>' + catBtn('', ' data-f-cat') + '<p class="err" data-err></p>' +
         '<div class="btnrow"><button class="primary small" data-act="save_unread" data-id="' + id + '">Save</button></div>';
     } else if (i.kind === 'duplicate') {
       var o = i.other;
@@ -363,7 +381,7 @@
         '<div class="btnrow"><button class="ghost small" data-act="later" data-id="' + id + '">Later</button><button class="primary small" data-act="paid" data-id="' + id + '">I paid it</button></div>';
     } else {
       h += '<div class="item-top"><div class="p">' + esc(t.payee) + '</div>' + amt + '</div><div class="sub">' + esc(when(t.timestamp)) + ' · ' + esc(t.account) + '</div>' +
-        '<select data-f-cat style="margin-top:8px">' + catOptions(t.category) + '</select><p class="err" data-err></p>' +
+        catBtn(t.category, ' data-f-cat') + '<p class="err" data-err></p>' +
         '<div class="btnrow"><button class="primary small" data-act="confirm" data-id="' + id + '">Confirm</button></div>';
     }
     return h + '</div>';
@@ -379,7 +397,7 @@
     else if (act === 'keep_both') { action = 'keep_both'; args = { id: id }; }
     else if (act === 'merge_dup') { action = 'merge_dup'; args = { id: id }; }
     else {
-      var cat = card.querySelector('[data-f-cat]').value;
+      var cat = card.querySelector('[data-f-cat]').getAttribute('data-val');
       if (!cat) return fail('Choose a category first.');
       var changes = { category: cat };
       if (act === 'save_unread') {
@@ -633,6 +651,7 @@
   /* Category picker: suggested first, then grouped. Used by Add and by the Places page. */
   function pickRows() {
     var all = state.cats || [], held = state.pick.held;
+    if (state.pick.both) return all.filter(function (c) { return c.category !== 'Income'; });
     return all.filter(function (c) { return held ? c.held : (!c.held && c.category !== 'Income'); });
   }
   function pickList(q) {
@@ -648,7 +667,7 @@
     var groups = {}, order = [];
     rows.forEach(function (c) {
       if (q && c.category.toLowerCase().indexOf(q) === -1) return;
-      var g = held ? 'Held for others' : (c.bucket || 'Other');
+      var g = (held || c.held) ? 'Held for others (not my money)' : (c.bucket || 'Other');
       if (!groups[g]) { groups[g] = []; order.push(g); }
       groups[g].push(c);
     });
