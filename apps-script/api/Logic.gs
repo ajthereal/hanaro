@@ -115,6 +115,8 @@ function obligationsUntil_(today, horizon, bills, debts) {
   return list;
 }
 
+function rpText_(n) { return 'Rp ' + Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.'); }
+
 function monthName_(iso) {
   var n = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   return Number(iso.slice(8, 10)) + ' ' + n[Number(iso.slice(5, 7)) - 1];
@@ -153,16 +155,28 @@ function computeHome(d) {
   var ob = obligationsUntil_(today, horizon, d.bills || [], d.debts || []);
   var obTotal = ob.reduce(function (a, o) { return a + o.amount; }, 0);
 
+  // Money held for other people (customer orders, convention tickets...). Never ours: it comes off cash before anything else.
+  var heldBy = {}, heldTotal = 0;
+  d.txns.forEach(function (t) {
+    if ((t.txn_type !== 'held_in' && t.txn_type !== 'held_out') || (t.status !== 'auto' && t.status !== 'confirmed')) return;
+    var sign = t.txn_type === 'held_in' ? 1 : -1, name = String(t.category || 'Other').replace(/^Held:\s*/, '');
+    heldBy[name] = (heldBy[name] || 0) + sign * num_(t.idr_amount);
+    heldTotal += sign * num_(t.idr_amount);
+  });
+  var heldByType = Object.keys(heldBy).map(function (k) { return { type: k, amount: heldBy[k] }; })
+    .filter(function (x) { return x.amount !== 0; }).sort(function (a, b) { return b.amount - a.amount; });
+
   var notes = [], safe = null, needs = [];
   if (!counted) needs.push('balances');
   if (!capped.length) needs.push('caps');
   if (counted) {
-    var cashSide = cash - obTotal;
+    var cashSide = cash - obTotal - Math.max(heldTotal, 0);
     var basis = capped.length ? Math.min(bucketsLeft, cashSide) : cashSide;
     safe = Math.max(0, Math.floor(basis / days / 1000) * 1000);
     if (cashSide < 0) notes.push('Cash is below the bills and minimums due before ' + monthName_(horizon) + '.');
     else notes.push('Bills and minimums are covered until ' + monthName_(horizon) + '. Money that has not landed never counts.');
     if (!capped.length) notes.push('Set bucket caps to include them in this number.');
+    if (heldTotal > 0) notes.push(rpText_(heldTotal) + ' in your accounts belongs to other people and is not counted.');
     var age = daysBetween_(day_(oldest), today);
     if (age >= 3) notes.push('Balances were last confirmed ' + age + ' days ago. Update them for an accurate number.');
   }
@@ -170,7 +184,7 @@ function computeHome(d) {
   var paidNow = d.txns.filter(function (t) { return t.txn_type === 'payment' && liveTxn_(t) && day_(t.timestamp).slice(0, 7) === month; })
     .reduce(function (a, t) { return a + num_(t.idr_amount); }, 0);
   var cardIds = {}; d.accounts.forEach(function (a) { if (a.type === 'credit card' && String(a.carries_balance).toUpperCase() === 'Y') cardIds[a.account] = true; });
-  var newCard = d.txns.filter(function (t) { return countsAsSpend_(t) && cardIds[t.account] && day_(t.timestamp).slice(0, 7) === month; })
+  var newCard = d.txns.filter(function (t) { return (countsAsSpend_(t) || (t.txn_type === 'held_out' && (t.status === 'auto' || t.status === 'confirmed'))) && cardIds[t.account] && day_(t.timestamp).slice(0, 7) === month; })
     .reduce(function (a, t) { return a + num_(t.idr_amount); }, 0);
   var cost = null;
   (d.debts || []).forEach(function (x) {
@@ -185,6 +199,7 @@ function computeHome(d) {
   return {
     today: today, horizon: horizon, days: days, safeToSpend: safe, needs: needs, notes: notes,
     buckets: buckets, insight: insight, cash: counted ? cash : null, obligations: ob,
+    heldTotal: heldTotal, heldByType: heldByType,
     debtDown: Math.round(paidNow - newCard), debtCost: cost === null ? null : Math.round(cost),
     reviewCount: items.length, payNowCount: items.filter(function (i) { return i.kind === 'pay_now'; }).length,
     lastSync: summary.last_sync_ok || null

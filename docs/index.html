@@ -60,16 +60,19 @@
   <div class="seg" role="tablist">
     <button id="kindSpent" class="on" role="tab">Spent</button>
     <button id="kindGot" role="tab">Received</button>
+    <button id="kindHeld" role="tab">Held for others</button>
   </div>
   <label for="addAmount">Amount (Rp)</label>
   <input id="addAmount" inputmode="numeric" autocomplete="off" placeholder="0">
   <label for="addPayee" id="payeeLabel">Spent on</label>
   <input id="addPayee" autocomplete="off" placeholder="For example, lunch at the market">
   <div id="catWrap">
-    <label for="addCat">Category</label>
+    <label for="addCat" id="catLabel">Category</label>
     <select id="addCat"></select>
+    <div id="newTypeWrap" hidden><label for="addNewType">Name of the new kind</label><input id="addNewType" autocomplete="off" placeholder="For example, Seminar fees"></div>
+    <p id="heldHint" class="note" hidden style="margin-top:8px">Money someone gave you to pass on. It is not your income and not counted in Safe to spend.</p>
   </div>
-  <label for="addAcc">Paid from</label>
+  <label for="addAcc" id="accLabel">Paid from</label>
   <select id="addAcc"></select>
   <label for="addMemo">Note (optional)</label>
   <input id="addMemo" autocomplete="off">

@@ -149,9 +149,10 @@ function handle_(req, who) {
   }
   if (a === 'categories') {
     return { categories: rows_(book, 'Categories').filter(function (c) { return String(c.active).toUpperCase() !== 'N'; })
-      .map(function (c) { return { category: c.category, bucket: c.bucket }; }), accounts: rows_(book, 'Accounts').filter(function (x) { return x.active !== 'N' && x.entity !== 'PT' && (x.type === 'bank' || x.type === 'credit card'); }).map(function (x) { return x.account; }) };
+      .map(function (c) { return { category: c.category, bucket: c.bucket, held: String(c.counts_in_bucket).toUpperCase() === 'HELD' }; }), accounts: rows_(book, 'Accounts').filter(function (x) { return x.active !== 'N' && x.entity !== 'PT' && (x.type === 'bank' || x.type === 'credit card'); }).map(function (x) { return x.account; }) };
   }
   if (a === 'status') return status_(book, who);
+  if (a === 'add_held_type') return addHeldType_(book, who, req);
 
   if (a === 'update_txn') return updateTxn_(book, who, req);
   if (a === 'add_txn') return addTxn_(book, who, req);
@@ -205,6 +206,25 @@ function status_(book, who) {
   return out;
 }
 
+function isHeld_(book, category) {
+  var rows = rows_(book, 'Categories');
+  for (var i = 0; i < rows.length; i++) if (rows[i].category === category) return String(rows[i].counts_in_bucket).toUpperCase() === 'HELD';
+  return false;
+}
+
+/** A new kind of money held for others, for example "Seminar fees". Stored as "Held: <name>". */
+function addHeldType_(book, who, req) {
+  var name = String(req.name || '').replace(/^Held:\s*/i, '').trim();
+  if (!name) throw userError_('Type a name for this kind of money, for example Seminar fees.');
+  if (name.length > 40) throw userError_('Keep the name under 40 characters.');
+  var full = 'Held: ' + name;
+  var rows = rows_(book, 'Categories');
+  for (var i = 0; i < rows.length; i++) if (String(rows[i].category).toLowerCase() === full.toLowerCase()) return { category: rows[i].category };
+  append_(book, 'Categories', [{ category: full, bucket: '', counts_in_bucket: 'HELD', ynab_categories_mapped: '', active: 'Y' }]);
+  audit_(book, NAMES[who], 'add_held_type', 'Categories', full, '', '', full);
+  return { category: full };
+}
+
 var EDITABLE = { category: 1, payee: 1, idr_amount: 1, memo: 1, account: 1 };
 
 function findTxn_(book, id) {
@@ -241,6 +261,7 @@ function updateTxn_(book, who, req) {
       if (!f.vals[f.h.indexOf('idr_amount')]) throw userError_('Type the amount before confirming.');
       if (!f.vals[f.h.indexOf('txn_type')]) setField_(book, who, f, 'txn_type', 'purchase');
     }
+    if (isHeld_(book, f.vals[f.h.indexOf('category')])) setField_(book, who, f, 'txn_type', 'held_out');
     setField_(book, who, f, 'status', 'confirmed');
     setField_(book, who, f, 'who', NAMES[who]);
     learnRule_(book, f.vals[f.h.indexOf('payee')], f.vals[f.h.indexOf('category')], f.vals[f.h.indexOf('bucket')]);
@@ -287,13 +308,15 @@ function addTxn_(book, who, req) {
   var amt = Number(req.amount);
   if (isNaN(amt) || amt <= 0) throw userError_('Type the amount as a number above zero.');
   if (!req.payee) throw userError_('Type who or what it was for.');
-  var income = req.kind === 'income';
-  if (!income && !req.category) throw userError_('Choose a category.');
+  var income = req.kind === 'income', held = req.kind === 'held';
+  if (!income && !req.category) throw userError_(held ? 'Choose what kind of money this is.' : 'Choose a category.');
+  if (held && !isHeld_(book, req.category)) throw userError_('That kind of money is not set up for holding. Add it as a new type first.');
+  if (!held && !income && isHeld_(book, req.category)) throw userError_('That type is for money held for others. Use Held for others.');
   var now = nowIso_(), id = 't_' + Utilities.getUuid().replace(/-/g, '').slice(0, 12);
   var cat = income ? 'Income' : req.category;
   append_(book, 'Transactions', [{
-    id: id, date: req.date || now.slice(0, 10), timestamp: now, txn_type: income ? 'income' : 'purchase', idr_amount: amt, orig_currency: 'IDR',
-    account: req.account || '', payee: req.payee, category: cat, bucket: income ? '' : bucketForCategory(rows_(book, 'Categories'), cat),
+    id: id, date: req.date || now.slice(0, 10), timestamp: now, txn_type: held ? 'held_in' : (income ? 'income' : 'purchase'), idr_amount: amt, orig_currency: 'IDR',
+    account: req.account || '', payee: req.payee, category: cat, bucket: (income || held) ? '' : bucketForCategory(rows_(book, 'Categories'), cat),
     who: NAMES[who], source: 'manual', settled: 'Y', status: 'confirmed', memo: req.memo || '', created_at: now, updated_at: now
   }]);
   audit_(book, NAMES[who], 'add', 'Transactions', id, '', '', amt);

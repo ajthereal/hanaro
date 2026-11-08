@@ -195,5 +195,22 @@ eq('cash below bills gives zero and says so', [lowCash.safeToSpend, /below/.test
 const noData = L.computeHome(Object.assign({}, base, { balances: [], buckets: [] }));
 eq('no balances: no invented number', [noData.safeToSpend, noData.needs], [null, ['balances', 'caps']]);
 
+
+// held for others: never ours, comes off cash, tracked per type
+const held = L.computeHome(Object.assign({}, base, { txns: base.txns.concat([
+  T({ id: 'h1', txn_type: 'held_in', status: 'confirmed', category: 'Held: Customer order', idr_amount: 1000000, timestamp: '2026-11-15T10:00:00+07:00' }),
+  T({ id: 'h2', txn_type: 'held_in', status: 'confirmed', category: 'Held: Convention tickets', idr_amount: 2000000, timestamp: '2026-11-16T10:00:00+07:00' }),
+  T({ id: 'h3', txn_type: 'held_out', status: 'confirmed', category: 'Held: Customer order', idr_amount: 400000, timestamp: '2026-11-17T10:00:00+07:00' })
+]) }));
+eq('held total', held.heldTotal, 2600000);
+eq('held by type', held.heldByType, [{ type: 'Convention tickets', amount: 2000000 }, { type: 'Customer order', amount: 600000 }]);
+// cash 5,000,000 - 800,000 bills - 2,600,000 held = 1,600,000; buckets left 3,000,000; lower = 1,600,000 / 11 = 145,454 -> 145,000
+eq('held money is not spendable', held.safeToSpend, 145000);
+eq('held money is not bucket spend', held.buckets.find((b) => b.bucket === 'Food').spent, 1000000);
+const heldCard = L.computeHome(Object.assign({}, base, { txns: base.txns.concat([T({ id: 'hc', txn_type: 'held_out', status: 'confirmed', category: 'Held: Customer order', idr_amount: 300000, account: 'Card A', timestamp: '2026-11-18T10:00:00+07:00' })]) }));
+eq('held purchase on a card still counts as card debt', heldCard.debtDown, 2000000 - 1000000 - 300000);
+const noHeld = L.computeHome(base);
+eq('nothing held means no held card', [noHeld.heldTotal, noHeld.heldByType], [0, []]);
+
 console.log(failed ? '\n' + failed + ' FAILED' : '\nAll passed');
 process.exit(failed ? 1 : 0);

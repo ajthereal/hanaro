@@ -80,3 +80,4 @@ nav button.on .badge{right:-4px}
 #setup{max-width:420px;margin:8vh auto 0}
 .setup-card{background:#fff;border-radius:28px;padding:26px;box-shadow:var(--shadow);display:flex;flex-direction:column}
 .setup-card .logo{margin-bottom:6px}.setup-card .logo img{border-radius:16px}.setup-card button{margin-top:18px}
+.seg button{font-size:13px;padding:0 6px}.kv .bad{color:var(--warn)}

@@ -149,6 +149,11 @@
           '<div style="font-size:14px">per day for the next ' + h.days + ' day' + (h.days === 1 ? '' : 's') + '</div><div class="rule"></div>' +
           h.notes.map(function (n) { return '<p class="note">' + esc(n) + '</p>'; }).join('') + '</div>';
       }
+      if (h.heldByType && h.heldByType.length) {
+        html += '<div class="card"><div class="label">Held for others</div><div class="stat' + (h.heldTotal < 0 ? ' bad' : '') + '" style="margin-top:2px">' + rp(h.heldTotal) + '</div>' +
+          h.heldByType.map(function (x) { return '<div class="kv"><span>' + esc(x.type) + '</span><span class="' + (x.amount < 0 ? 'bad' : 'muted') + '">' + rp(x.amount) + '</span></div>'; }).join('') +
+          '<p class="note">' + (h.heldTotal < 0 ? 'You have sent out more than you were given. An entry for money received may be missing.' : 'This is other people\'s money. It is not counted in Safe to spend.') + '</p></div>';
+      }
       var down = h.debtDown >= 0;
       html += '<div class="card"><div class="two"><div><div class="tiny muted">' + (down ? 'Debt down this month' : 'Debt up this month') + '</div><div class="stat ' + (down ? 'good' : 'bad') + '">' + rpShort(Math.abs(h.debtDown)) + '</div></div>' +
         '<div class="sep"></div><div><div class="tiny muted">Debt cost this month</div><div class="stat ' + (h.debtCost === null ? '' : 'bad') + '">' + (h.debtCost === null ? '–' : rpShort(h.debtCost)) + '</div></div></div>' +
@@ -172,10 +177,16 @@
     if (state.cats) return Promise.resolve();
     return load('categories').then(function (d) { state.cats = d.categories; state.accounts = d.accounts; });
   }
-  function catOptions(sel) {
-    return '<option value="">Choose a category</option>' + (state.cats || []).filter(function (c) { return c.category !== 'Income'; }).map(function (c) {
-      return '<option value="' + esc(c.category) + '"' + (c.category === sel ? ' selected' : '') + '>' + esc(c.category) + (c.bucket ? ' · ' + esc(c.bucket) : '') + '</option>';
-    }).join('');
+  function opt(c, sel, withBucket) {
+    return '<option value="' + esc(c.category) + '"' + (c.category === sel ? ' selected' : '') + '>' + esc(c.category) + (withBucket && c.bucket ? ' · ' + esc(c.bucket) : '') + '</option>';
+  }
+  /** mode: 'spend' = my own spending, 'held' = money held for others, otherwise both (Review). */
+  function catOptions(sel, mode) {
+    var all = state.cats || [], mine = all.filter(function (c) { return !c.held && c.category !== 'Income'; }), held = all.filter(function (c) { return c.held; });
+    var head = '<option value="">' + (mode === 'held' ? 'What kind of money is it' : 'Choose a category') + '</option>';
+    if (mode === 'spend') return head + mine.map(function (c) { return opt(c, sel, true); }).join('');
+    if (mode === 'held') return head + held.map(function (c) { return opt(c, sel, false); }).join('') + '<option value="__new">+ Add a new kind…</option>';
+    return head + mine.map(function (c) { return opt(c, sel, true); }).join('') + (held.length ? '<optgroup label="Held for others (not my money)">' + held.map(function (c) { return opt(c, sel, false); }).join('') + '</optgroup>' : '');
   }
 
   /* ---------- Review ---------- */
@@ -265,7 +276,9 @@
         else if (t.type === 'payment') tag = '<span class="tag gray">CARD PAYMENT</span>';
         else if (t.type === 'transfer') tag = '<span class="tag gray">TRANSFER</span>';
         else if (t.type === 'income') tag = '<span class="tag paid">RECEIVED</span>';
-        html += '<div class="act"><div class="l"><div class="p">' + esc(t.payee || '(no name)') + '</div><div class="sub">' + esc(t.category || (t.type === 'payment' ? 'Paid to your card' : t.type === 'transfer' ? 'Sent to someone' : 'No category yet')) + ' · ' + esc(t.account) + '</div>' + (tag ? '<div style="margin-top:4px">' + tag + '</div>' : '') + '</div><div class="r">' + (t.amount === null ? '–' : (t.type === 'income' ? '+' : '') + rp(t.amount)) + '</div></div>';
+        else if (t.type === 'held_in') tag = '<span class="tag new">HELD FOR OTHERS</span>';
+        else if (t.type === 'held_out') tag = '<span class="tag new">PASSED ON</span>';
+        html += '<div class="act"><div class="l"><div class="p">' + esc(t.payee || '(no name)') + '</div><div class="sub">' + esc(t.category || (t.type === 'payment' ? 'Paid to your card' : t.type === 'transfer' ? 'Sent to someone' : 'No category yet')) + ' · ' + esc(t.account) + '</div>' + (tag ? '<div style="margin-top:4px">' + tag + '</div>' : '') + '</div><div class="r">' + (t.amount === null ? '–' : (t.type === 'income' || t.type === 'held_in' ? '+' : '') + rp(t.amount)) + '</div></div>';
       });
       if (open) html += '</div>';
       v.innerHTML = html;
@@ -314,7 +327,7 @@
   /* ---------- Add ---------- */
   function openAdd() {
     ensureCats().then(function () {
-      $('addCat').innerHTML = catOptions('');
+      $('addCat').innerHTML = catOptions('', 'spend');
       $('addAcc').innerHTML = '<option value="">Not sure / cash</option>' + state.accounts.map(function (a) { return '<option>' + esc(a) + '</option>'; }).join('');
       ['addAmount', 'addPayee', 'addMemo'].forEach(function (i) { $(i).value = ''; });
       $('addMsg').textContent = ''; setKind('spent');
@@ -323,21 +336,34 @@
   }
   function closeAdd() { $('sheet').hidden = true; $('sheetBack').hidden = true; }
   function setKind(k) {
-    state.kind = k; $('kindSpent').className = k === 'spent' ? 'on' : ''; $('kindGot').className = k === 'got' ? 'on' : '';
-    $('catWrap').hidden = k === 'got'; $('payeeLabel').textContent = k === 'got' ? 'Received from' : 'Spent on';
+    state.kind = k;
+    ['Spent:spent', 'Got:got', 'Held:held'].forEach(function (x) { var p = x.split(':'); $('kind' + p[0]).className = k === p[1] ? 'on' : ''; });
+    $('catWrap').hidden = k === 'got';
+    $('payeeLabel').textContent = k === 'spent' ? 'Spent on' : 'Received from';
+    $('catLabel').textContent = k === 'held' ? 'What kind of money' : 'Category';
+    $('accLabel').textContent = k === 'spent' ? 'Paid from' : 'Received into';
+    $('addCat').innerHTML = catOptions('', k === 'held' ? 'held' : 'spend');
+    $('newTypeWrap').hidden = true; $('heldHint').hidden = k !== 'held';
   }
+  $('addCat').addEventListener('change', function () { $('newTypeWrap').hidden = $('addCat').value !== '__new'; });
   $('addBtn').addEventListener('click', openAdd);
   $('addCancel').addEventListener('click', closeAdd); $('sheetBack').addEventListener('click', closeAdd);
   $('kindSpent').addEventListener('click', function () { setKind('spent'); }); $('kindGot').addEventListener('click', function () { setKind('got'); });
+  $('kindHeld').addEventListener('click', function () { setKind('held'); });
   $('addSave').addEventListener('click', function () {
-    var amt = Number($('addAmount').value.replace(/[^\d]/g, '')), payee = $('addPayee').value.trim(), cat = $('addCat').value;
+    var amt = Number($('addAmount').value.replace(/[^\d]/g, '')), payee = $('addPayee').value.trim(), cat = $('addCat').value, k = state.kind;
     var m = $('addMsg'); m.textContent = '';
     if (!amt) { m.textContent = 'Type the amount as a number.'; return; }
-    if (!payee) { m.textContent = 'Type who or what it was for.'; return; }
-    if (state.kind === 'spent' && !cat) { m.textContent = 'Choose a category.'; return; }
+    if (!payee) { m.textContent = k === 'spent' ? 'Type who or what it was for.' : 'Type who it came from.'; return; }
+    if (k === 'spent' && !cat) { m.textContent = 'Choose a category.'; return; }
+    if (k === 'held' && !cat) { m.textContent = 'Choose what kind of money this is.'; return; }
+    var newName = $('addNewType').value.trim();
+    if (k === 'held' && cat === '__new' && !newName) { m.textContent = 'Type a name for the new kind, for example Seminar fees.'; return; }
     $('addSave').disabled = true;
-    api('add_txn', { kind: state.kind === 'got' ? 'income' : 'purchase', amount: amt, payee: payee, category: cat, account: $('addAcc').value, memo: $('addMemo').value.trim() })
-      .then(function () { closeAdd(); banner('Saved'); render(); }, function (e) { m.textContent = e.message; })
+    var pre = (k === 'held' && cat === '__new') ? api('add_held_type', { name: newName }).then(function (r) { cat = r.category; state.cats = null; }) : Promise.resolve();
+    pre.then(function () {
+      return api('add_txn', { kind: { spent: 'purchase', got: 'income', held: 'held' }[k], amount: amt, payee: payee, category: cat, account: $('addAcc').value, memo: $('addMemo').value.trim() });
+    }).then(function () { closeAdd(); banner('Saved'); render(); }, function (e) { m.textContent = e.message; })
       .then(function () { $('addSave').disabled = false; });
   });
 
