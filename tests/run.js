@@ -276,6 +276,30 @@ const pay = L.payeeSummary_([T({ payee: 'Sate Tegal', idr_amount: 50000, categor
 eq('payee list groups the same place', [pay.length, pay[0].count, pay[0].total, pay[0].category, pay[0].trusted], [1, 2, 110000, 'Eating out', true]);
 eq('evening text', L.eveningText_({ spentToday: 150000, spentTodayCount: 2, toPayCount: 3, toPayTotal: 330000, reviewCount: 5 }).split('\n').length, 4);
 
+// ---------- YNAB import (apps-script/api/YnabImport.gs) ----------
+const sb3 = { module: { exports: {} }, console };
+vm.createContext(sb3);
+vm.runInContext(fs.readFileSync(path.join(__dirname, '../apps-script/api/Logic.gs'), 'utf8'), sb3);
+sb3.ruleKey = sb3.module.exports.ruleKey;
+vm.runInContext(fs.readFileSync(path.join(__dirname, '../apps-script/api/YnabImport.gs'), 'utf8'), sb3);
+const Y = sb3.module.exports;
+const yt = (o) => Object.assign({ date: '2026-08-01', account_id: 'a1', cleared: 'cleared', deleted: false }, o);
+const flat = Y.flattenYnab_('Plan', [
+  yt({ id: 't1', amount: -50000000, payee_name: 'Sate Tegal', category_id: 'c1', category_name: 'Eat Out' }),
+  yt({ id: 't2', amount: 1000000000, payee_name: 'Client', category_id: 'c2', category_name: 'Income' }),
+  yt({ id: 't3', amount: -100000000, payee_name: 'Mall', category_id: null, subtransactions: [{ amount: -60000000, category_id: 'c1', category_name: 'Eat Out' }, { amount: -40000000, category_id: 'c3', category_name: 'Groceries' }] }),
+  yt({ id: 't4', amount: -1000, deleted: true }),
+  yt({ id: 't5', amount: -20000000, transfer_account_id: 'a2', payee_name: 'Transfer' })
+], [{ id: 'a1', name: 'Card A' }, { id: 'a2', name: 'Bank B' }], [{ name: 'Food', categories: [{ id: 'c1' }] }]);
+eq('import rows: splits, deleted, transfers', flat.map((r) => r.ynab_id + ':' + r.outflow + ':' + r.inflow + ':' + r.transfer_account), ['t1:50000:0:', 't2:0:1000000:', 't3#1:60000:0:', 't3#2:40000:0:', 't5:20000:0:Bank B']);
+eq('import rows: account and group names', [flat[0].account, flat[0].category_group], ['Card A', 'Food']);
+const cmap = Y.ynabCategoryMap_([{ category: 'Eating out', bucket: 'Food & eat out', ynab_categories_mapped: 'Eat Out; Telor' }, { category: 'Groceries', bucket: 'Food & eat out', ynab_categories_mapped: 'Groceries' }]);
+const hist = (payee, cat, n, date) => Array.from({ length: n }, () => ({ payee, category: cat, outflow: 10000, transfer_account: '', date: date || '2026-08-01' }));
+const learned = Y.learnRulesFromHistory_(
+  hist('Sate Tegal', 'Eat Out', 4).concat(hist('Warung Mix', 'Eat Out', 2), hist('Warung Mix', 'Groceries', 2), hist('One Off', 'Eat Out', 1), hist('Known Place', 'Eat Out', 5), hist('Half Trusted', 'Eat Out', 2)),
+  cmap, [{ match_text: 'known place' }]);
+eq('learned rules: trusted, mixed and one-off payees', learned.map((r) => r.match_text + '>' + r.category + '>' + r.auto_confirm + '>' + r.times_used), ['half trusted>Eating out>N>2', 'sate tegal>Eating out>Y>4']);
+
 failed += require('./glue.js');
 
 console.log(failed ? '\n' + failed + ' FAILED' : '\nAll passed');
