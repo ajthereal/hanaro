@@ -165,8 +165,71 @@ function spendTotals_(txns, accounts, today) {
   return r;
 }
 
+
+/**
+ * Manual entries and bank emails are the same purchase seen twice. Pair them when the amount is the same
+ * and the times are close (entered up to 12 hours after the bank email, or up to 3 hours before it).
+ * An account that is filled in on both sides must agree. Returns [{ manual: row, email: row }].
+ */
+function findMatches_(txns) {
+  var used = {}, pairs = [];
+  var man = txns.filter(function (t) { return t.source === 'manual' && t.status === 'confirmed' && t.txn_type === 'purchase' && flagsOf_(t).indexOf('matched') === -1; })
+    .sort(function (a, b) { return Date.parse(a.timestamp) - Date.parse(b.timestamp); });
+  var em = txns.filter(function (t) { return t.source === 'email' && t.status === 'auto' && t.txn_type === 'purchase' && flagsOf_(t).indexOf('matched') === -1; });
+  man.forEach(function (m) {
+    var mm = Date.parse(m.timestamp), best = null, bestGap = Infinity;
+    em.forEach(function (e) {
+      if (used[e.id] || num_(e.idr_amount) !== num_(m.idr_amount)) return;
+      if (m.account && e.account && m.account !== e.account) return;
+      var diff = Date.parse(e.timestamp) - mm;
+      if (diff < -12 * 3600000 || diff > 3 * 3600000) return;
+      if (Math.abs(diff) < bestGap) { best = e; bestGap = Math.abs(diff); }
+    });
+    if (best) { used[best.id] = true; pairs.push({ manual: m, email: best }); }
+  });
+  return pairs;
+}
+
+/** Hides manual entries that already have a bank email, so nothing is counted twice before the merge is saved. */
+function dropMatchedManual_(txns) {
+  var gone = {};
+  findMatches_(txns).forEach(function (p) { gone[p.manual.id] = true; });
+  return txns.filter(function (t) { return !gone[t.id]; });
+}
+
+/** One row per place: how often, how much, and what category it usually gets. */
+function payeeSummary_(txns, rules) {
+  var by = {};
+  txns.forEach(function (t) {
+    if (t.txn_type !== 'purchase' || (t.status !== 'auto' && t.status !== 'confirmed') || !t.payee) return;
+    var k = ruleKey(t.payee); if (!k) return;
+    var g = by[k] || (by[k] = { key: k, payee: t.payee, count: 0, total: 0, last: '', category: '', lastCat: '' });
+    g.count++; g.total += num_(t.idr_amount);
+    if (String(t.timestamp) >= g.last) { g.last = String(t.timestamp); g.payee = t.payee; if (t.category) g.lastCat = t.category; }
+  });
+  (rules || []).forEach(function (r) {
+    var k = ruleKey(r.match_text);
+    Object.keys(by).forEach(function (key) { if (k && key.indexOf(k) !== -1 && !by[key].rule) by[key].rule = r; });
+  });
+  return Object.keys(by).map(function (k) {
+    var g = by[k];
+    return { key: g.key, payee: g.payee, count: g.count, total: g.total, last: g.last.slice(0, 10), category: g.rule ? g.rule.category : g.lastCat, remembered: !!g.rule, trusted: !!g.rule && String(g.rule.auto_confirm).toUpperCase() === 'Y' };
+  }).sort(function (a, b) { return b.count - a.count || b.total - a.total; }).slice(0, 300);
+}
+
+/** The one message sent each evening. h = computeHome result. */
+function eveningText_(h) {
+  var lines = ['Evening check.'];
+  lines.push('Spent today: ' + rpText_(h.spentToday) + (h.spentTodayCount ? ' (' + h.spentTodayCount + ' purchase' + (h.spentTodayCount === 1 ? '' : 's') + ')' : '') + '.');
+  if (h.toPayCount) lines.push('Card charges not paid yet: ' + h.toPayCount + ', total ' + rpText_(h.toPayTotal) + '. Pay that amount in one payment in myBCA and Hanaro will notice it.');
+  else lines.push('No card charges waiting to be paid.');
+  if (h.reviewCount) lines.push('Waiting for you in Hanaro: ' + h.reviewCount + ' item' + (h.reviewCount === 1 ? '' : 's') + '.');
+  return lines.join('\n');
+}
+
 /** Everything the Home screen shows. d = { txns, accounts, buckets, balances, bills, debts, summary, today } */
 function computeHome(d) {
+  d = Object.assign({}, d, { txns: dropMatchedManual_(d.txns) });
   var today = d.today, month = today.slice(0, 7);
   var summary = {}; (d.summary || []).forEach(function (r) { summary[r.key] = r.value; });
   var horizon = /^\d{4}-\d{2}-\d{2}$/.test(String(summary.horizon_date || '')) && summary.horizon_date > today
@@ -268,5 +331,5 @@ function ruleKey(payee) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { spendTotals_: spendTotals_, weekStart_: weekStart_, computeHome: computeHome, reviewItems: reviewItems, settledPayNow: settledPayNow, bucketForCategory: bucketForCategory, ruleKey: ruleKey, nextDue_: nextDue_, firstOfNextMonth_: firstOfNextMonth_ };
+  module.exports = { findMatches_: findMatches_, dropMatchedManual_: dropMatchedManual_, payeeSummary_: payeeSummary_, eveningText_: eveningText_, spendTotals_: spendTotals_, weekStart_: weekStart_, computeHome: computeHome, reviewItems: reviewItems, settledPayNow: settledPayNow, bucketForCategory: bucketForCategory, ruleKey: ruleKey, nextDue_: nextDue_, firstOfNextMonth_: firstOfNextMonth_ };
 }

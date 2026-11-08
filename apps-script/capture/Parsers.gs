@@ -132,7 +132,8 @@ function parseBcaJournal(msg) {
   } else {
     // Other journal types (Fleet Top Up, bill payments...). Take any amount-like field.
     t.payee = kind;
-    t.idr_amount = parseIdr(f['total payment'] || f['amount'] || f['total amount'] || f['transaction amount']);
+    t.idr_amount = parseIdr(f['top up amount'] || f['total payment'] || f['amount'] || f['total amount'] || f['transaction amount']);
+    if (/top up/i.test(kind) && f['flazz card number']) t.memo = 'Card ending ' + last4(f['flazz card number']);
   }
   if (t.idr_amount === null) return fail('bca_journal', 'Could not find the amount for "' + kind + '"');
   return { status: 'parsed', txn: t };

@@ -114,3 +114,11 @@ nav button.on .badge{right:-4px}
 .fbtn{display:block}.fbtn .fl,.fbtn .fv{width:100%;text-align:left}
 .amtwrap{padding-left:6px}
 button.savefab{width:auto;min-width:0}
+
+.geo{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--teal);padding:4px 0 0}
+.clr{display:inline-block;color:var(--good);font-weight:700;font-size:12px;margin-left:4px}
+button.rc{font-size:12px;padding:4px 0;min-height:32px;color:var(--muted)}
+.plrow{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}.plrow:last-child{border-bottom:0}
+.plrow .l{min-width:0}.plrow .p{font-weight:600;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.plcat{flex:none;border:1px solid #B7DAD6;background:#F4FAF8;border-radius:16px;padding:7px 12px;font-size:13px;color:var(--teal);min-height:36px}.plcat.none{color:#8AA0A8}
+#photoMsg{display:block}

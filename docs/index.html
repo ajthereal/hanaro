@@ -68,12 +68,14 @@
   </div>
   <div class="fields">
     <div class="field"><label for="addPayee" id="payeeLabel">Payee</label><input id="addPayee" autocomplete="off" autocapitalize="words" placeholder="Who or what">
-      <div id="payeeSug" class="sugs" hidden></div></div>
+      <div id="payeeSug" class="sugs" hidden></div>
+      <div id="geoNote" class="geo" hidden><span id="geoText"></span> <button type="button" id="geoClear" class="link">Clear</button></div></div>
     <button id="catBtn" class="field fbtn" type="button"><span class="fl" id="catLabel">Category</span><span class="fv" id="catVal">Choose</span><span class="chev" aria-hidden="true">›</span></button>
     <div id="newTypeWrap" class="field" hidden><label for="addNewType">Name of the new kind</label><input id="addNewType" autocomplete="off" placeholder="For example, Seminar fees"></div>
     <p id="heldHint" class="note" hidden>Money someone gave you to pass on. It is not your income and not counted as spending.</p>
     <div class="field"><label for="addAcc" id="accLabel">Account</label><select id="addAcc"></select></div>
     <div class="field"><label for="addMemo">Memo (optional)</label><input id="addMemo" autocomplete="off"></div>
+    <div class="field"><span class="fl">Receipt photo (optional, saved to PT_Receipts)</span><button id="photoBtn" class="link" type="button">Take or choose a photo</button><input id="photoIn" type="file" accept="image/*" hidden><span id="photoMsg" class="note"></span></div>
   </div>
   <p id="addMsg" class="err" role="alert"></p>
   <button id="addSave" class="primary savefab">Save</button>

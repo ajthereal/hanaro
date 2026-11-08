@@ -1,5 +1,5 @@
 /**
- * Hanaro operations: watchdog, 48-hour auto-confirm for rule matches, nightly backup, Telegram.
+ * Hanaro operations: watchdog, evening message, 48-hour auto-confirm for rule matches, nightly backup, Telegram.
  * Part of the same Apps Script project as Main.gs and Parsers.gs.
  */
 var SILENCE_DAYS = { 'bca@bca.co.id': 14, 'kartukreditbca@bca.co.id': 14, 'creditcard.notification@cimbniaga.co.id': 30, 'jenius_noreply@smbci.com': 30 };
@@ -97,4 +97,22 @@ function telegramSetup() {
   if (!chat) throw new Error('No group found. Send a message in the group that has the bot, then run this again.');
   p.setProperty('TELEGRAM_CHAT', String(chat.id));
   if (!telegram_('Hanaro is connected. Alerts will arrive here.')) throw new Error('The group was found but the test message failed. See the Log tab in the Sheet.');
+}
+
+/** Sheets turns "2026-11-09" into a date; read it back as plain text either way. */
+function dayStr_(x) { return x instanceof Date ? Utilities.formatDate(x, 'Asia/Jakarta', 'yyyy-MM-dd') : String(x || ''); }
+
+/** Evening message. The API project writes the text at about 20:00; this sends it once per day. */
+function eveningSend() {
+  var book = ss_(), summary = readTab_(book.getSheetByName('Summary')), v = {};
+  summary.forEach(function (r) { v[r.key] = r.value; });
+  var today = Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM-dd');
+  if (dayStr_(v.evening_sent) === today) return;
+  var d = dayStr_(v.evening_date);
+  if (d !== today || !v.evening_text) {
+    log_(book.getSheetByName('Log'), 'warn', 'Evening message not sent: the API project has not written today\'s text', 'evening_date=' + d);
+    telegram_('Hanaro could not prepare tonight\'s summary. Open the app to see where things stand.');
+    return;
+  }
+  if (telegram_(String(v.evening_text))) setSummary_(book.getSheetByName('Summary'), 'evening_sent', today);
 }

@@ -6,7 +6,7 @@
  */
 var SHEET_ID = 'PASTE_SHEET_ID_HERE';   // set once in the pasted copy, never committed
 var ROLES = { aj: 'owner', cynthia: 'partner' };
-var NAMES = { aj: 'AJ', cynthia: 'Cynthia' };
+var NAMES = { aj: 'AJ', cynthia: 'Cynthia', system: 'Hanaro (auto)' };
 var MAX_FAILS = 10;
 
 function book_() { return SpreadsheetApp.openById(SHEET_ID); }
@@ -104,6 +104,7 @@ function data_(book, who) {
   accounts.forEach(function (a) { if (a.entity === 'PT') ptNames[a.account] = true; });
   var txns = rows_(book, 'Transactions');
   if (ROLES[who] === 'partner') txns = txns.filter(function (t) { return !ptNames[t.account]; });
+  txns = dropMatchedManual_(txns);
   return {
     book: book, accounts: accounts, txns: txns, buckets: rows_(book, 'Buckets'), balances: rows_(book, 'Balances'),
     bills: rows_(book, 'Bills'), debts: rows_(book, 'Debts'), summary: rows_(book, 'Summary'),
@@ -116,7 +117,8 @@ function slim_(t, settled) {
   return {
     id: t.id, date: String(t.date).slice(0, 10), timestamp: t.timestamp, type: t.txn_type, amount: t.idr_amount === '' ? null : Number(t.idr_amount),
     account: t.account, payee: t.payee, category: t.category, bucket: t.bucket, status: t.status, memo: t.memo, source: t.source,
-    payNow: f.indexOf('pay_now') !== -1, paid: !!(settled && settled[t.id]), links: t.links_to_id || '', who: t.who || ''
+    payNow: f.indexOf('pay_now') !== -1, paid: !!(settled && settled[t.id]), links: t.links_to_id || '', who: t.who || '',
+    cleared: t.source === 'email', receipt: !!t.receipt_drive_id, lat: has_(t.lat) && t.lat !== '' ? Number(t.lat) : null, lng: has_(t.lng) && t.lng !== '' ? Number(t.lng) : null
   };
 }
 
@@ -153,6 +155,9 @@ function handle_(req, who) {
       .map(function (c) { return { category: c.category, bucket: c.bucket, held: String(c.counts_in_bucket).toUpperCase() === 'HELD' }; }), accounts: rows_(book, 'Accounts').filter(function (x) { return x.active !== 'N' && x.entity !== 'PT' && (x.type === 'bank' || x.type === 'credit card'); }).map(function (x) { return x.account; }) };
   }
   if (a === 'status') return status_(book, who);
+  if (a === 'payees') return { payees: payeeSummary_(data_(book, who).txns, rows_(book, 'Rules')), categories: categoryList_(book) };
+  if (a === 'set_payee_category') return setPayeeCategory_(book, who, req);
+  if (a === 'attach_photo') return attachPhoto_(book, who, req);
   if (a === 'add_held_type') return addHeldType_(book, who, req);
 
   if (a === 'update_txn') return updateTxn_(book, who, req);
@@ -318,9 +323,12 @@ function addTxn_(book, who, req) {
   append_(book, 'Transactions', [{
     id: id, date: req.date || now.slice(0, 10), timestamp: now, txn_type: held ? 'held_in' : (income ? 'income' : 'purchase'), idr_amount: amt, orig_currency: 'IDR',
     account: req.account || '', payee: req.payee, category: cat, bucket: (income || held) ? '' : bucketForCategory(rows_(book, 'Categories'), cat),
-    who: NAMES[who], source: 'manual', settled: 'Y', status: 'confirmed', memo: req.memo || '', created_at: now, updated_at: now
+    who: NAMES[who], source: 'manual', settled: 'Y', status: 'confirmed', memo: req.memo || '', created_at: now, updated_at: now,
+    lat: has_(req.lat) && req.lat !== '' && req.lat !== null ? Number(req.lat) : '', lng: has_(req.lng) && req.lng !== '' && req.lng !== null ? Number(req.lng) : ''
   }]);
   audit_(book, NAMES[who], 'add', 'Transactions', id, '', '', amt);
+  if (req.photo) { try { attachPhoto_(book, who, { id: id, photo: req.photo }); } catch (e) { log_(book, 'warn', 'Receipt photo not saved: ' + e.message, id); } }
+  try { reconcile_(book, who); } catch (e2) { log_(book, 'warn', 'Matching failed: ' + e2.message, ''); }
   return { id: id };
 }
 
@@ -343,4 +351,108 @@ function bootstrap_(book, who) {
     .map(function (c) { return { category: c.category, bucket: c.bucket, held: String(c.counts_in_bucket).toUpperCase() === 'HELD' }; });
   var accts = d.accounts.filter(function (x) { return x.active !== 'N' && x.entity !== 'PT' && (x.type === 'bank' || x.type === 'credit card'); }).map(function (x) { return x.account; });
   return { home: home, review: { items: review }, activity: { items: activity }, categories: { categories: cats, accounts: accts } };
+}
+
+
+function categoryList_(book) {
+  return rows_(book, 'Categories').filter(function (c) { return String(c.active).toUpperCase() !== 'N'; })
+    .map(function (c) { return { category: c.category, bucket: c.bucket, held: String(c.counts_in_bucket).toUpperCase() === 'HELD' }; });
+}
+
+function addFlag_(book, who, f, flag) {
+  var col = f.h.indexOf('flags'), cur = String(f.vals[col] || '');
+  if (cur.split(',').indexOf(flag) === -1) setField_(book, who, f, 'flags', cur ? cur + ',' + flag : flag);
+}
+
+/**
+ * A purchase typed in the app and its bank email are one purchase. The email row is kept (it has the exact time,
+ * account and reference) and receives what the person typed; the typed row is voided, never deleted.
+ */
+function reconcile_(book, who) {
+  var pairs = findMatches_(rows_(book, 'Transactions'));
+  pairs.forEach(function (p) {
+    var e = findTxn_(book, p.email.id), m = findTxn_(book, p.manual.id);
+    function mv(k) { return m.vals[m.h.indexOf(k)]; }
+    if (mv('category')) { setField_(book, who, e, 'category', mv('category')); setField_(book, who, e, 'bucket', mv('bucket')); }
+    if (mv('payee')) setField_(book, who, e, 'payee', mv('payee'));
+    if (mv('who')) setField_(book, who, e, 'who', mv('who'));
+    if (mv('memo')) setField_(book, who, e, 'memo', mv('memo'));
+    if (mv('lat') !== '') { setField_(book, who, e, 'lat', mv('lat')); setField_(book, who, e, 'lng', mv('lng')); }
+    if (mv('receipt_drive_id')) setField_(book, who, e, 'receipt_drive_id', mv('receipt_drive_id'));
+    setField_(book, who, e, 'status', 'confirmed');
+    addFlag_(book, who, e, 'matched');
+    touch_(e);
+    setField_(book, who, m, 'status', 'void');
+    setField_(book, who, m, 'memo', (mv('memo') ? mv('memo') + ' | ' : '') + 'Merged with bank email ' + p.email.id);
+    addFlag_(book, who, m, 'matched');
+    touch_(m);
+    if (mv('category')) learnRule_(book, p.email.payee, mv('category'), mv('bucket'));
+  });
+  return pairs.length;
+}
+
+/** Trigger, every 5 minutes: pair typed entries with bank emails that arrived afterwards. */
+function reconcileRun() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return;
+  var book = book_();
+  try { reconcile_(book, 'system'); } catch (e) { try { log_(book, 'error', 'Matching failed: ' + e.message, String(e.stack || '')); } catch (e2) {} } finally { lock.releaseLock(); }
+}
+
+function setSummary_(book, key, value) {
+  var sh = book.getSheetByName('Summary'), rows = sh.getDataRange().getValues();
+  for (var i = 1; i < rows.length; i++) if (rows[i][0] === key) { sh.getRange(i + 1, 2, 1, 2).setValues([[value, nowIso_()]]); return; }
+  sh.appendRow([key, value, nowIso_()]);
+}
+
+/** Trigger, every evening: writes the message the capture script sends to Telegram. */
+function eveningRun() {
+  var book = book_();
+  try {
+    var d = data_(book, 'aj');
+    setSummary_(book, 'evening_text', eveningText_(computeHome(d)));
+    setSummary_(book, 'evening_date', d.today);
+  } catch (e) { try { log_(book, 'error', 'Evening summary failed: ' + e.message, String(e.stack || '')); } catch (e2) {} throw e; }
+}
+
+/** Run once from the editor after pasting. Replaces this project's triggers. */
+function setupTriggers() {
+  ScriptApp.getProjectTriggers().forEach(function (t) { ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('reconcileRun').timeBased().everyMinutes(5).create();
+  ScriptApp.newTrigger('eveningRun').timeBased().atHour(20).everyDays(1).create();
+  eveningRun();
+  DriveApp.getRootFolder(); // asks for Drive permission once, used for receipt photos
+}
+
+/** Defaults for a place: the next bank email from it gets this category (trusted straight away). */
+function setPayeeCategory_(book, who, req) {
+  var key = ruleKey(req.payee);
+  if (!key) throw userError_('Choose a place first.');
+  var cats = rows_(book, 'Categories'), bucket = null;
+  cats.forEach(function (c) { if (c.category === req.category) bucket = c.bucket || ''; });
+  if (bucket === null) throw userError_('Choose a category from the list.');
+  var sh = book.getSheetByName('Rules'), v = sh.getDataRange().getValues(), h = v[0];
+  var iT = h.indexOf('match_text'), iC = h.indexOf('category'), iB = h.indexOf('bucket'), iA = h.indexOf('auto_confirm');
+  for (var i = 1; i < v.length; i++) if (ruleKey(v[i][iT]) === key) {
+    sh.getRange(i + 1, iC + 1).setValue(req.category); sh.getRange(i + 1, iB + 1).setValue(bucket); sh.getRange(i + 1, iA + 1).setValue('Y');
+    audit_(book, NAMES[who], 'set_payee_category', 'Rules', key, 'category', v[i][iC], req.category);
+    return { saved: true };
+  }
+  append_(book, 'Rules', [{ rule_id: 'r_' + Utilities.getUuid().replace(/-/g, '').slice(0, 8), match_type: 'contains', match_text: key, category: req.category, bucket: bucket, auto_confirm: 'Y', times_used: 0 }]);
+  audit_(book, NAMES[who], 'set_payee_category', 'Rules', key, 'category', '', req.category);
+  return { saved: true };
+}
+
+/** Saves a receipt photo to the PT_Receipts folder in Drive and links it to the transaction. */
+function attachPhoto_(book, who, req) {
+  var ph = req.photo || req;
+  if (!ph.data) throw userError_('The photo did not arrive. Please try again.');
+  var f = findTxn_(book, req.id);
+  var it = DriveApp.getFoldersByName('PT_Receipts'), folder = it.hasNext() ? it.next() : DriveApp.createFolder('PT_Receipts');
+  var d = String(f.vals[f.h.indexOf('date')]).slice(0, 10), pay = String(f.vals[f.h.indexOf('payee')] || 'receipt').replace(/[^\w\- ]+/g, '').trim().slice(0, 30);
+  var name = d + ' ' + pay + ' ' + f.vals[f.h.indexOf('idr_amount')] + '.jpg';
+  var file = folder.createFile(Utilities.newBlob(Utilities.base64Decode(ph.data), ph.mime || 'image/jpeg', name));
+  setField_(book, who, f, 'receipt_drive_id', file.getId());
+  touch_(f);
+  return { saved: true };
 }

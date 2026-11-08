@@ -28,6 +28,14 @@ eq('date card', P.parseWib('07-11-2026 20:13:39 WIB'), '2026-11-07T20:13:39+07:0
 eq('date cimb', P.parseWib('2026-10-30/23:33:12'), '2026-10-30T23:33:12+07:00');
 eq('date jenius', P.parseWib('04 NOV 2026 04:27:39 WIB'), '2026-11-04T04:27:39+07:00');
 
+// BCA Fleet / Flazz top up (invented numbers)
+let rt = P.parseEmail({
+  from: 'bca@bca.co.id', subject: 'Internet Transaction Journal', messageId: 'topup1',
+  html: tbl([['Status', 'Successful'], ['Transaction Date', '06 Nov 2026 19:49:56'], ['Transaction Type', 'Fleet Top Up'],
+    ['Flazz Card Number', '0000000000001234'], ['Source of Fund', '8105****99'], ['Top Up Amount', 'IDR 200,000.00'], ['Reference No.', 'REF-TOPUP-0001']])
+});
+eq('top up parsed', [rt.status, rt.txn && rt.txn.idr_amount, rt.txn && rt.txn.payee, rt.txn && rt.txn.txn_type, rt.txn && rt.txn.account_last], ['parsed', 200000, 'Fleet Top Up', 'purchase', '99']);
+
 // --- BCA journal: card payment
 let r = P.parseEmail({
   from: 'bca@bca.co.id', subject: 'Internet Transaction Journal', messageId: 'm1',
@@ -250,6 +258,25 @@ const payOdd = T({ id: 'pc', txn_type: 'payment', idr_amount: 300000, timestamp:
 eq('a payment that matches no total settles nothing', Object.keys(L.settledPayNow(lump.concat([payOdd]))), []);
 eq('charges made after the payment are not covered', Object.keys(L.settledPayNow(lump.concat([T({ id: 'pd', txn_type: 'payment', idr_amount: 415895, timestamp: '2026-11-06T20:00:00+07:00', account: 'Bank A' })]))), []);
 eq('lump sum leaves nothing to review', L.reviewItems(lump.concat([payAll])).filter((i) => i.kind === 'pay_now').length, 0);
+
+// manual entries and bank emails are matched, not counted twice
+const mt = [
+  T({ id: 'm1', source: 'manual', status: 'confirmed', idr_amount: 214830, account: '', payee: 'Yoghurt', category: 'Eating out', timestamp: '2026-11-08T13:00:00+07:00' }),
+  T({ id: 'e1', source: 'email', status: 'auto', idr_amount: 214830, account: 'Card A', payee: 'SIR GREEK', timestamp: '2026-11-08T12:41:00+07:00' }),
+  T({ id: 'm2', source: 'manual', status: 'confirmed', idr_amount: 50000, account: 'Bank A', timestamp: '2026-11-08T13:05:00+07:00' }),
+  T({ id: 'e2', source: 'email', status: 'auto', idr_amount: 50000, account: 'Card A', timestamp: '2026-11-08T13:06:00+07:00' }),
+  T({ id: 'm3', source: 'manual', status: 'confirmed', idr_amount: 70000, timestamp: '2026-11-08T13:00:00+07:00' }),
+  T({ id: 'e3', source: 'email', status: 'auto', idr_amount: 70000, timestamp: '2026-11-09T13:00:00+07:00' })
+];
+eq('manual entry and bank email are paired', L.findMatches_(mt).map((p) => p.manual.id + '>' + p.email.id), ['m1>e1']);
+eq('different accounts or far apart times are not paired', L.dropMatchedManual_(mt).map((t) => t.id), ['e1', 'm2', 'e2', 'm3', 'e3']);
+const twice = L.computeHome(Object.assign({}, base, { today: '2026-11-08', txns: [mt[0], mt[1]] }));
+eq('a matched purchase is counted once', twice.spentToday, 214830);
+const pay = L.payeeSummary_([T({ payee: 'Sate Tegal', idr_amount: 50000, category: 'Eating out', timestamp: '2026-11-02T12:00:00+07:00' }), T({ payee: 'SATE TEGAL', idr_amount: 60000, category: '', timestamp: '2026-11-03T12:00:00+07:00' })], [{ match_text: 'sate tegal', category: 'Eating out', auto_confirm: 'Y' }]);
+eq('payee list groups the same place', [pay.length, pay[0].count, pay[0].total, pay[0].category, pay[0].trusted], [1, 2, 110000, 'Eating out', true]);
+eq('evening text', L.eveningText_({ spentToday: 150000, spentTodayCount: 2, toPayCount: 3, toPayTotal: 330000, reviewCount: 5 }).split('\n').length, 4);
+
+failed += require('./glue.js');
 
 console.log(failed ? '\n' + failed + ' FAILED' : '\nAll passed');
 process.exit(failed ? 1 : 0);
