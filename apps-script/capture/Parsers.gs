@@ -23,7 +23,9 @@ function htmlToText(html) {
     .replace(/<\/t[dh]>/gi, ' | ')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#39;/g, "'");
+    .replace(/&gt;/gi, '>').replace(/&quot;/gi, '"')
+    .replace(/&#x([0-9a-f]+);/gi, function (m, h) { return String.fromCharCode(parseInt(h, 16)); })
+    .replace(/&#(\d+);/g, function (m, n) { return String.fromCharCode(parseInt(n, 10)); });
   return t.replace(/[ \t\r]+/g, ' ').replace(/\n\s*\n+/g, '\n');
 }
 

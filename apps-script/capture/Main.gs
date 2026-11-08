@@ -53,10 +53,14 @@ function accountFor_(accounts, t) {
   return null;
 }
 
+function ruleKey_(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 function ruleFor_(rules, payee) {
-  var p = String(payee || '').toLowerCase();
+  var p = ruleKey_(payee);
   for (var i = 0; i < rules.length; i++) {
-    var m = String(rules[i].match_text || '').toLowerCase();
+    var m = ruleKey_(rules[i].match_text);
     if (m && p.indexOf(m) !== -1) return rules[i];
   }
   return null;

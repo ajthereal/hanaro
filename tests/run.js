@@ -109,6 +109,8 @@ const a = P.parseEmail({ from: 'CREDITCARD.NOTIFICATION@cimbniaga.co.id', subjec
 const b = P.parseEmail({ from: 'CREDITCARD.NOTIFICATION@cimbniaga.co.id', subject: '[RAHASIA] Konfirmasi Transaksi', messageId: 'y', html: tbl([['No. Kartu Kredit', '5289-19XX-XXXX-XX18'], ['Jumlah Transaksi', '1,000.00 IDR'], ['Tanggal/Waktu Transaksi', '2026-10-30/23:33:12'], ['Nama Merchant', 'A']]) });
 eq('dedupe key stable', a.txn.dedupe_key, b.txn.dedupe_key);
 
+eq('html entities decode (hex and numeric)', P.htmlToText('<p>A&#x2F;B &#39;C&#39; &amp; D</p>').trim(), "A/B 'C' & D");
+
 // --- Real emails have line breaks and tabs between cells; rows must still parse
 const rowNl = (k, v) => '\r\n\t\t<tr>\r\n\t\t\t<td width="198">' + k + '</td>\r\n\t\t\t<td width="2">: </td>\r\n\t\t\t<td>' + v + '</td>\r\n\t\t</tr>';
 r = P.parseEmail({
@@ -122,6 +124,76 @@ r = P.parseEmail({
   html: '<table>' + [['Nomor Kartu', '431657XXXX1234'], ['Merchant / ATM', 'SAMPLE SHOP'], ['Pada Tanggal', '07-11-2026 20:13:39 WIB'], ['Sejumlah', 'Rp96.416,00']].map((x) => rowNl(x[0], x[1])).join('') + '</table>'
 });
 eq('bca card with line breaks', r.txn && r.txn.idr_amount, 96416);
+
+
+// ---------- App logic (apps-script/api/Logic.gs) ----------
+const sb2 = { module: { exports: {} }, console };
+vm.createContext(sb2);
+vm.runInContext(fs.readFileSync(path.join(__dirname, '../apps-script/api/Logic.gs'), 'utf8'), sb2);
+const L = sb2.module.exports;
+const T = (o) => Object.assign({ txn_type: 'purchase', status: 'auto', flags: '', category: '', bucket: '', account: 'Card A' }, o);
+
+eq('next due this month', L.nextDue_('2026-11-08', 16), '2026-11-16');
+eq('next due rolls over', L.nextDue_('2026-11-20', 16), '2026-12-16');
+eq('first of next month', L.firstOfNextMonth_('2026-12-15'), '2027-01-01');
+eq('rule key', L.ruleKey('GoPayQR*Sample Cafe 12!'), 'gopayqr sample cafe 12');
+
+// pay-now settles when a same-amount card payment follows within a day
+const pn = [
+  T({ id: 'a', idr_amount: 150000, timestamp: '2026-11-07T08:20:10+07:00', flags: 'pay_now' }),
+  T({ id: 'p1', txn_type: 'payment', idr_amount: 150000, timestamp: '2026-11-07T08:20:39+07:00' }),
+  T({ id: 'b', idr_amount: 96416, timestamp: '2026-11-07T20:13:39+07:00', flags: 'pay_now' }),
+  T({ id: 'c', idr_amount: 5000, timestamp: '2026-11-07T21:00:00+07:00', flags: 'pay_now,paid' })
+];
+const st = L.settledPayNow(pn);
+eq('pay-now matched by payment', !!st.a, true);
+eq('pay-now unmatched stays open', !!st.b, false);
+eq('pay-now marked paid by hand', !!st.c, true);
+eq('one payment settles only one purchase', Object.keys(L.settledPayNow(pn.concat([T({ id: 'a2', idr_amount: 150000, timestamp: '2026-11-07T09:00:00+07:00', flags: 'pay_now' })]))).sort(), ['a', 'c']);
+
+// review list
+const rv = L.reviewItems([
+  T({ id: 'u', status: 'needs_review', timestamp: '2026-11-06T10:00:00+07:00' }),
+  T({ id: 'd', status: 'possible_duplicate', timestamp: '2026-11-06T11:00:00+07:00' }),
+  T({ id: 'n', status: 'auto', timestamp: '2026-11-06T12:00:00+07:00' }),
+  T({ id: 'k', status: 'auto', category: 'Eating out', flags: 'rule:r_1', timestamp: '2026-11-06T13:00:00+07:00' }),
+  T({ id: 'x', status: 'void', timestamp: '2026-11-06T14:00:00+07:00' }),
+  T({ id: 'pay', txn_type: 'payment', timestamp: '2026-11-06T15:00:00+07:00' })
+]);
+eq('review kinds (trusted rule rows skip review)', rv.map((i) => i.kind + ':' + i.t.id), ['confirm:n', 'duplicate:d', 'unread:u']);
+
+// home: safe to spend = lower of bucket money left and cash after bills, per day
+const base = {
+  today: '2026-11-20',
+  accounts: [
+    { account: 'Bank A', type: 'bank', allowed_for_new_spend: 'Y' },
+    { account: 'Savings', type: 'savings', allowed_for_new_spend: 'N' },
+    { account: 'Card A', type: 'credit card', carries_balance: 'Y' }
+  ],
+  balances: [{ account: 'Bank A', date_confirmed: '2026-11-19', confirmed_balance: 5000000 }, { account: 'Savings', date_confirmed: '2026-11-19', confirmed_balance: 99000000 }],
+  buckets: [{ bucket: 'Food', month: '2026-11', cap_idr: 3000000 }, { bucket: 'Kids', month: '2026-11', cap_idr: 1000000 }],
+  bills: [{ bill: 'Internet', amount_idr: 500000, due_day: 25, active: 'Y' }, { bill: 'Paid already', amount_idr: 700000, due_day: 22, active: 'Y', last_paid: '2026-11-18' }],
+  debts: [{ debt: 'Loan X', entity: 'Household', minimum: 300000, due_day: 28, balance_idr: 12000000, effective_rate_annual: 0.12 }],
+  summary: [{ key: 'last_sync_ok', value: '2026-11-20T10:00:00+07:00' }],
+  txns: [
+    T({ id: '1', idr_amount: 1000000, bucket: 'Food', timestamp: '2026-11-10T12:00:00+07:00' }),
+    T({ id: '2', idr_amount: 500000, bucket: 'Food', status: 'needs_review', timestamp: '2026-11-11T12:00:00+07:00' }),
+    T({ id: '3', txn_type: 'payment', idr_amount: 2000000, timestamp: '2026-11-12T12:00:00+07:00' })
+  ]
+};
+let h = L.computeHome(base);
+// 11 days to 1 Dec. Cash 5,000,000 - 500,000 internet - 300,000 minimum = 4,200,000. Buckets left 2,000,000 + 1,000,000 = 3,000,000. Lower = 3,000,000 / 11 = 272,727, rounded down to 272,000.
+eq('days to horizon', h.days, 11);
+eq('safe to spend is the lower side per day', h.safeToSpend, 272000);
+eq('unread spend is not counted', h.buckets.find((b) => b.bucket === 'Food').spent, 1000000);
+eq('savings never count as cash', h.cash, 5000000);
+eq('debt cost per month', h.debtCost, 120000);
+eq('debt down = payments minus new card spend', h.debtDown, 2000000 - 1000000);
+eq('month stored as a date still matches', L.computeHome(Object.assign({}, base, { buckets: [{ bucket: 'Food', month: '2026-11-01T00:00:00+07:00', cap_idr: 3000000 }] })).buckets.length, 1);
+const lowCash = L.computeHome(Object.assign({}, base, { balances: [{ account: 'Bank A', date_confirmed: '2026-11-19', confirmed_balance: 400000 }] }));
+eq('cash below bills gives zero and says so', [lowCash.safeToSpend, /below/.test(lowCash.notes[0])], [0, true]);
+const noData = L.computeHome(Object.assign({}, base, { balances: [], buckets: [] }));
+eq('no balances: no invented number', [noData.safeToSpend, noData.needs], [null, ['balances', 'caps']]);
 
 console.log(failed ? '\n' + failed + ' FAILED' : '\nAll passed');
 process.exit(failed ? 1 : 0);
