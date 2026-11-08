@@ -1,6 +1,6 @@
 /**
  * Hanaro capture (Apps Script project A, the only project with Gmail access).
- * Runs every minute. Reads new bank emails, saves every one to Inbox_Raw,
+ * Runs every 5 minutes. Reads new bank emails, saves every one to Inbox_Raw,
  * turns parsed ones into Transactions, and sends anything it cannot read to Review.
  * Needs Parsers.gs and Ops.gs in the same project.
  */
@@ -200,11 +200,11 @@ function notifyNew_(tx, pings, failed) {
 
 function rpText_(n) { return 'Rp ' + Math.round(Number(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.'); }
 
-/** Run once from the editor after pasting. Creates the one-minute capture, the watchdog, the evening message and the nightly backup. */
+/** Run once from the editor after pasting. Creates the 5-minute capture, the watchdog, the evening message and the nightly backup. */
 function setup() {
   PropertiesService.getScriptProperties().deleteProperty('LAST_TS'); // re-read the last 7 days; already-saved emails are skipped
   ScriptApp.getProjectTriggers().forEach(function (t) { ScriptApp.deleteTrigger(t); });
-  ScriptApp.newTrigger('captureRun').timeBased().everyMinutes(1).create();
+  ScriptApp.newTrigger('captureRun').timeBased().everyMinutes(5).create();
   ScriptApp.newTrigger('watchdogRun').timeBased().everyMinutes(30).create();
   ScriptApp.newTrigger('autoConfirmRun').timeBased().everyHours(1).create();
   ScriptApp.newTrigger('backupRun').timeBased().atHour(2).everyDays(1).create();
