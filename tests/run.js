@@ -296,7 +296,7 @@ eq('import rows: account and group names', [flat[0].account, flat[0].category_gr
 const cmap = Y.ynabCategoryMap_([{ category: 'Eating out', bucket: 'Food & eat out', ynab_categories_mapped: 'Eat Out; Telor' }, { category: 'Groceries', bucket: 'Food & eat out', ynab_categories_mapped: 'Groceries' }]);
 const hist = (payee, cat, n, date) => Array.from({ length: n }, () => ({ payee, category: cat, outflow: 10000, transfer_account: '', date: date || '2026-08-01' }));
 const learned = Y.learnRulesFromHistory_(
-  hist('Sate Tegal', 'Eat Out', 4).concat(hist('Warung Mix', 'Eat Out', 2), hist('Warung Mix', 'Groceries', 2), hist('One Off', 'Eat Out', 1), hist('Known Place', 'Eat Out', 5), hist('Half Trusted', 'Eat Out', 2)),
+  hist('Sate Tegal', 'Eat Out', 4).concat(hist('Warung Mix', 'Eat Out', 2), hist('Warung Mix', 'Groceries', 2), hist('One Off', 'Eat Out', 1), hist('Known Place', 'Eat Out', 5), hist('Half Trusted', 'Eat Out', 2), hist('BCA', 'Eat Out', 5), hist('Pam', 'Eat Out', 5), hist('Jenius e-Card top up', 'Eat Out', 5)),
   cmap, [{ match_text: 'known place' }]);
 eq('learned rules: trusted, mixed and one-off payees', learned.map((r) => r.match_text + '>' + r.category + '>' + r.auto_confirm + '>' + r.times_used), ['half trusted>Eating out>N>2', 'sate tegal>Eating out>Y>4']);
 

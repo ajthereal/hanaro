@@ -65,8 +65,11 @@ function ynabCategoryMap_(categories) {
 /**
  * Learns payee -> category from spending rows. A payee needs 2 or more purchases and one category
  * in at least 70% of them. 3 or more purchases and 80% makes it trusted (auto_confirm Y).
- * Payees that already have a rule are left alone. Returns rule objects ready for the Rules tab.
+ * Payees that already have a rule are left alone. Names under 4 letters, bank or wallet names, and
+ * top-ups or catch-up entries are skipped, because a 'contains' rule on them would match unrelated emails.
+ * Returns rule objects ready for the Rules tab.
  */
+var GENERIC_PAYEE_ = /\b(bca|bri|bni|cimb|uob|jenius|gopay|ovo|dana|top up|topup|catch up|purchases|spending|transfer|starting balance|reconcil)/;
 function learnRulesFromHistory_(rows, catMap, existingRules) {
   var have = {};
   (existingRules || []).forEach(function (r) { var k = ruleKey(r.match_text); if (k) have[k] = true; });
@@ -76,7 +79,7 @@ function learnRulesFromHistory_(rows, catMap, existingRules) {
     var m = catMap[r.category];
     if (!m || m.category === 'Debt payment' || m.category === 'Own transfer') return;
     var k = ruleKey(r.payee);
-    if (k.length < 3 || have[k]) return;
+    if (k.length < 4 || GENERIC_PAYEE_.test(k) || have[k]) return;
     var b = by[k] || (by[k] = { n: 0, cats: {}, last: {} });
     b.n++;
     b.cats[m.category] = (b.cats[m.category] || 0) + 1;
