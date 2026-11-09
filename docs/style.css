@@ -142,3 +142,26 @@ button.addrow{border:0;background:none;color:var(--teal);font-weight:600;font-si
 .chk{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:600;color:var(--text)}.chk input{appearance:auto;-webkit-appearance:checkbox;width:24px;height:24px;min-height:0;padding:0;flex:none;margin:0;accent-color:var(--teal)}
 .ptrow{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--line)}.ptrow .s{font-size:12px;color:var(--muted)}
 .curchip{width:auto;flex:none;border:0;background:var(--line);color:var(--teal);font-weight:700;font-size:16px;border-radius:16px;padding:6px 12px;min-height:36px;appearance:auto;-webkit-appearance:menulist}
+
+/* Labels: phone shows only the open tab's name; wide screens show all */
+nav button:not(.on) .lb{display:none}
+
+/* Wide screens: iPad landscape and desktop */
+@media (min-width:1000px){
+  body{padding:28px 32px 48px 252px}
+  #app{max-width:1500px}
+  nav{left:0;right:auto;top:0;bottom:0;width:220px;max-width:none;height:auto;margin:0;border-radius:0 28px 28px 0;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:6px;padding:28px 14px}
+  nav button,nav button.on{width:100%;height:50px;justify-content:flex-start;padding:0 16px;gap:12px;border-radius:25px}
+  nav button:not(.on) .lb{display:inline}
+  nav button.add{order:-1;margin-bottom:14px;justify-content:center}
+  nav .badge{top:50%;right:14px;transform:translateY(-50%)}nav button.on .badge{right:14px}
+  .board{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.25fr) minmax(0,1fr);gap:22px;align-items:start}
+  .board>div{display:flex;flex-direction:column;gap:14px;min-width:0}
+  #view[data-v=spending]{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;align-items:start}
+  #view[data-v=spending]>div:first-child,#view[data-v=spending]>button.ghost{grid-column:1/-1}
+  #view[data-v=review]{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:16px;align-items:start}
+  #view[data-v=review]>div:first-child,#view[data-v=review]>.chips{grid-column:1/-1}
+  #view[data-v=activity],#view[data-v=status],#view[data-v=payees]{max-width:760px}
+  header{justify-content:flex-end;gap:18px}
+  #banner{max-width:560px}
+}
