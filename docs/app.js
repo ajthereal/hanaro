@@ -122,7 +122,7 @@
     return flush().then(function () {
       if (queue.length) throw new Error('Cannot reach Hanaro. Check your internet connection.');
       if (!bootP) bootP = api('bootstrap').then(function (b) {
-        ['home', 'review', 'activity', 'categories'].forEach(function (k) { save(k, b[k]); });
+        ['home', 'review', 'activity', 'categories', 'plan'].forEach(function (k) { if (b[k]) save(k, b[k]); });
         addPlaces(b.activity.items.map(function (t) { return { lat: t.lat, lng: t.lng, payee: t.payee, category: t.category, account: t.account }; }));
         useCats(b.categories); setWho(b.home.user); state.counts.review = b.home.reviewCount; renderNav();
         bootP = null; return b;
@@ -167,15 +167,16 @@
     home: '<path d="M4 11l8-7 8 7v9a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"/>',
     review: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.5"/>',
     activity: '<path d="M4 6h16M4 12h16M4 18h10"/>',
+    spending: '<path d="M5 20V10M12 20V4M19 20v-7"/>',
     status: '<rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/>'
   };
-  var LABELS = { home: 'HOME', review: 'REVIEW', activity: 'ACTIVITY', status: 'STATUS' };
+  var LABELS = { home: 'HOME', review: 'REVIEW', activity: 'ACTIVITY', spending: 'SPENDING', status: 'STATUS' };
   function renderNav() {
     document.querySelectorAll('nav [data-go]').forEach(function (b) {
-      var v = b.getAttribute('data-go'), on = state.view === v || (v === 'status' && state.view === 'payees');
+      var v = b.getAttribute('data-go'), on = state.view === v || (v === 'status' && state.view === 'payees') || (v === 'spending' && state.view === 'activity');
       b.className = on ? 'on' : '';
       b.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[v] + '</svg>' +
-        (on ? LABELS[v] : '') + (v === 'review' && state.counts.review ? '<span class="badge">' + state.counts.review + '</span>' : '');
+        (on ? (state.view === 'activity' && v === 'spending' ? 'ACTIVITY' : LABELS[v]) : '') + (v === 'review' && state.counts.review ? '<span class="badge">' + state.counts.review + '</span>' : '');
     });
   }
   function setPill(iso, err) {
@@ -193,24 +194,27 @@
   $('syncPill').addEventListener('click', function () { render(); });
 
   var TITLE = 'font-size:30px;font-weight:300;letter-spacing:-.5px;margin:6px 0 0 2px';
-  function usable(name, c) { return c && (name !== 'home' || c.d.spentToday !== undefined); }
+  function usable(name, c) { return c && (name !== 'home' || c.d.spentToday !== undefined) && (name !== 'spending' || c.d.fixed !== undefined); }
   function render() {
     var v = $('view'), name = state.view, tok = ++state.token;
     if (name === 'status') return renderStatus(v, tok);
     if (name === 'payees') return renderPayees(v, tok);
-    var paint = { home: paintHome, review: paintReview, activity: paintActivity }[name];
-    var c = snap(name); if (!usable(name, c)) c = null;
+    var paint = { home: paintHome, review: paintReview, activity: paintActivity, spending: paintSpending }[name];
+    var ck = name === 'spending' ? 'plan' : name;
+    var c = snap(ck); if (!usable(name, c)) c = null;
     if (c) paint(v, c.d); else v.innerHTML = '<div class="empty">Loading…</div>';
     state.busy = true; setPill();
     refresh().then(function () {
       state.busy = false; setPill(undefined, false);
       if (tok !== state.token || editing(v)) return;
-      paint(v, snap(name).d);
+      var fresh = snap(ck);
+      if (!fresh) { v.innerHTML = '<div class="card"><div class="label">Needs a server update</div><p class="note">Hanaro did not send the plan. Paste the newest API code into the Apps Script project and deploy it again, then reopen this screen.</p></div>'; return; }
+      paint(v, fresh.d);
     }, function (e) {
       state.busy = false; setPill(undefined, true);
       if (tok !== state.token) return;
       if (/not recognised/.test(e.message)) { LS.del('hanaro.key'); showSetup(e.message); return; }
-      if (c) { banner(/Cannot reach/.test(e.message) ? 'Offline. Showing what was saved ' + ago(new Date(snap(name).at).toISOString()) + '.' : e.message, true, 6000); return; }
+      if (c) { banner(/Cannot reach/.test(e.message) ? 'Offline. Showing what was saved ' + ago(new Date(snap(ck).at).toISOString()) + '.' : e.message, true, 6000); return; }
       v.innerHTML = '<div class="card"><div class="label">Could not load</div><p class="note">' + esc(e.message) + '</p><button class="ghost small" id="retry">Try again</button></div>';
       $('retry').addEventListener('click', render);
       banner(e.message, true);
@@ -226,6 +230,21 @@
       '<div style="font-size:14px">' + (h.spentTodayCount ? h.spentTodayCount + ' purchase' + (h.spentTodayCount === 1 ? '' : 's') : 'Nothing spent yet today') + '</div><div class="rule"></div>' +
       '<div class="two"><div><div class="tiny muted">This week</div><div class="stat">' + rpShort(h.spentWeek) + '</div></div><div class="sep"></div><div><div class="tiny muted">This month</div><div class="stat">' + rpShort(h.spentMonth) + '</div></div></div>' +
       '<p class="note" style="margin-top:8px">About ' + rp(h.avgPerDay) + ' a day so far this month. Transfers, card payments, business accounts and money held for others are not counted.</p></div>';
+    if (h.pacing) {
+      var pc = h.pacing, pct = Math.max(0, Math.min(100, pc.amount ? pc.spent / pc.amount * 100 : 0));
+      var word = { on: 'On pace', near: 'Close to the line', over: 'Over the line' }[pc.status];
+      html += '<div class="card"><div class="cardhead"><div class="label">Flexible spending</div><div class="tiny ' + (pc.status === 'on' ? '' : 'bad') + '" style="font-weight:700;color:' + (pc.status === 'on' ? 'var(--good)' : pc.status === 'near' ? 'var(--yellowText)' : 'var(--warn)') + '">' + word + '</div></div>' +
+        '<div class="big" style="margin-top:4px"><span class="mid">' + rpShort(pc.spent) + '</span><span class="note" style="margin-left:8px">of ' + rpShort(pc.amount) + ' planned</span></div>' +
+        '<div class="pace ' + pc.status + '"><div class="f" style="width:' + pct.toFixed(1) + '%"></div><div class="tick" style="left:' + (pc.dayFrac * 100).toFixed(1) + '%"></div></div>' +
+        '<div class="pacefoot"><span>Day ' + pc.day + ' of ' + pc.daysInMonth + '</span><span>' + (pc.under >= 0 ? rpShort(pc.under) + ' under the line' : rpShort(-pc.under) + ' over the line') + '</span></div>' +
+        '<p class="note" style="margin-top:6px">About ' + rp(pc.perDay) + ' a day left for ' + pc.daysLeft + ' days.</p></div>';
+    } else if (!h.hasPlan) {
+      html += '<div class="card"><div class="label">Plan</div><p class="note">Set a planned amount for the month and Home will show how you are pacing.</p><button class="ghost small" data-go-spending>Set the plan</button></div>';
+    }
+    if (h.compare && h.compare.hasLast) {
+      var cp = h.compare;
+      html += '<div class="card" style="flex-direction:row;justify-content:space-between;align-items:center"><div><div style="font-size:14px;font-weight:600">' + (cp.diff >= 0 ? rpShort(cp.diff) + ' less' : rpShort(-cp.diff) + ' more') + ' than last month</div><div class="note">at this point in the month</div></div>' + spark(cp.thisSeries, cp.lastSeries) + '</div>';
+    }
     if (h.toPayCount || h.billsWeek.length) {
       html += '<div class="card"><div class="label">Left to pay</div>';
       if (h.toPayCount) html += '<div class="kv"><span>Card charges not paid yet (' + h.toPayCount + ')</span><b>' + rp(h.toPayTotal) + '</b></div>';
@@ -241,6 +260,7 @@
     if (h.reviewCount) html += '<button class="ghost" data-go-review>' + h.reviewCount + ' item' + (h.reviewCount === 1 ? '' : 's') + ' need you</button>';
     v.innerHTML = html;
     v.querySelectorAll('[data-go-review]').forEach(function (r) { r.addEventListener('click', function () { go('review'); }); });
+    v.querySelectorAll('[data-go-spending]').forEach(function (r) { r.addEventListener('click', function () { go('spending'); }); });
     var pa = v.querySelector('[data-paid-all]');
     if (pa) pa.addEventListener('click', function () {
       var rc = snap('review'), list = rc ? rc.d.items.filter(function (i) { return i.kind === 'pay_now'; }) : [];
@@ -250,6 +270,96 @@
       var c = snap('home'); if (c) paintHome(v, c.d);
     });
   }
+
+
+  /* ---------- Spending: the plan in three buckets ---------- */
+  function spark(a, b) {
+    var n = Math.max(a.length, b.length), mx = Math.max(1, a[a.length - 1] || 0, b[b.length - 1] || 0);
+    function path(s) { return s.map(function (y, i) { return (i ? 'L' : 'M') + (2 + 92 * i / Math.max(1, n - 1)).toFixed(1) + ' ' + (33 - 29 * y / mx).toFixed(1); }).join(''); }
+    var ex = 2 + 92 * (a.length - 1) / Math.max(1, n - 1), ey = 33 - 29 * (a[a.length - 1] || 0) / mx;
+    return '<svg width="96" height="36" viewBox="0 0 96 36" role="img" aria-label="This month against last month, running total"><path d="' + path(b) + '" fill="none" stroke="#B7DAD6" stroke-width="2" stroke-linecap="round"/><path d="' + path(a) + '" fill="none" stroke="#0B6F7A" stroke-width="2.5" stroke-linecap="round"/><circle cx="' + ex.toFixed(1) + '" cy="' + ey.toFixed(1) + '" r="3.5" fill="#F28DB0"/></svg>';
+  }
+  var PM = { '01': 'January', '02': 'February', '03': 'March', '04': 'April', '05': 'May', '06': 'June', '07': 'July', '08': 'August', '09': 'September', '10': 'October', '11': 'November', '12': 'December' };
+  function paintSpending(v, p) {
+    var html = '<div style="' + TITLE + '">Spending</div>';
+    html += '<div class="card"><div class="label">Planned for ' + PM[p.month.slice(5, 7)] + '</div><div class="big"><span class="rp">Rp</span><span class="n">' + esc(bigParts(p.planned).n) + '</span><span class="z">' + esc(bigParts(p.planned).z) + '</span></div>' +
+      '<p class="note">Fixed bills, money set aside for yearly costs, and one flexible number for everything else.</p></div>';
+    html += '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Fixed</div><span class="note">' + rpShort(p.fixedTotal) + '</span></div>';
+    p.fixed.forEach(function (f, i) {
+      var tag = { paid: '<span class="tag paid">PAID</span>', soon: '<span class="tag soon">IN ' + f.daysTo + ' DAY' + (f.daysTo === 1 ? '' : 'S') + '</span>', late: '<span class="tag late">OVERDUE</span>', later: f.due ? '<span class="tag gray">LATER</span>' : '' }[f.status];
+      html += '<button class="prow2" data-edit="fixed" data-i="' + i + '"><span class="l"><span class="p">' + esc(f.item) + '</span><span class="s">' + (f.dueDay ? 'Due on the ' + f.dueDay + (f.dueDay === 1 ? 'st' : f.dueDay === 2 ? 'nd' : f.dueDay === 3 ? 'rd' : 'th') : 'No due day') + '</span></span><span class="r">' + rp(f.amount) + ' ' + tag + '</span></button>';
+    });
+    if (!p.fixed.length) html += '<p class="note" style="padding:10px 0 0">Rent, school fees, internet and other bills that are the same every month.</p>';
+    html += '<button class="addrow" data-add="fixed">+ Add a fixed bill</button></div>';
+    html += '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Non-monthly</div><span class="note">' + rpShort(p.setAsideTotal) + ' set aside</span></div>';
+    p.nonmonthly.forEach(function (n, i) {
+      html += '<button class="prow2" data-edit="nonmonthly" data-i="' + i + '"><span class="l"><span class="p">' + esc(n.item) + '</span><span class="s">Every ' + n.every + ' month' + (n.every === 1 ? '' : 's') + ', ' + rp(n.target) + '</span></span><span class="r">' + rp(n.setAside) + '<span class="s">a month</span></span></button>';
+    });
+    if (!p.nonmonthly.length) html += '<p class="note" style="padding:10px 0 0">Costs that come once in a while, like car service or annual tax. Hanaro spreads each one over the months so it never surprises you.</p>';
+    html += '<button class="addrow" data-add="nonmonthly">+ Add a yearly or occasional cost</button></div>';
+    var f = p.flexible;
+    if (f) {
+      html += '<button class="card" data-edit="flexible" style="border:0;text-align:left;font:inherit;color:inherit;width:100%"><div class="cardhead"><div class="label">Flexible</div><span class="note">one number</span></div>' +
+        '<div class="big" style="margin-top:4px"><span class="rp" style="font-size:18px">Rp</span><span class="n" style="font-size:36px;color:var(--text)">' + esc(bigParts(f.amount).n) + '</span><span class="z" style="font-size:18px">' + esc(bigParts(f.amount).z) + '</span></div>' +
+        '<div class="pace ' + f.status + '"><div class="f" style="width:' + Math.max(0, Math.min(100, f.amount ? f.spent / f.amount * 100 : 0)).toFixed(1) + '%"></div><div class="tick" style="left:' + (f.dayFrac * 100).toFixed(1) + '%"></div></div>' +
+        '<div class="pacefoot"><span>' + rpShort(f.spent) + ' spent</span><span style="color:' + (f.left >= 0 ? 'var(--good)' : 'var(--warn)') + ';font-weight:700">' + (f.left >= 0 ? rpShort(f.left) + ' left' : rpShort(-f.left) + ' over') + ' · ' + f.daysLeft + ' days</span></div>' +
+        '<p class="note" style="margin-top:4px">Everything that is not a fixed or non-monthly item: groceries, eating out, fuel, fun. No limits per category.</p></button>';
+    } else {
+      html += '<div class="card"><div class="label">Flexible</div><p class="note">One number for groceries, eating out, fuel, fun and everything else that moves.' + (p.suggestFlexible ? ' You spent about ' + rpShort(p.suggestFlexible) + ' a month on this over the last 3 months.' : '') + '</p>' +
+        '<button class="primary small" data-add="flexible"' + (p.suggestFlexible ? ' data-suggest="' + p.suggestFlexible + '"' : '') + '>' + (p.suggestFlexible ? 'Use ' + rpShort(p.suggestFlexible) : 'Set the flexible number') + '</button></div>';
+    }
+    html += '<button class="ghost" data-go-activity>See all transactions</button>';
+    v.innerHTML = html;
+    v.querySelectorAll('[data-edit]').forEach(function (b) { b.addEventListener('click', function () {
+      var k = b.getAttribute('data-edit'), i = Number(b.getAttribute('data-i'));
+      openPlan(k, k === 'fixed' ? p.fixed[i] : k === 'nonmonthly' ? p.nonmonthly[i] : p.flexible);
+    }); });
+    v.querySelectorAll('[data-add]').forEach(function (b) { b.addEventListener('click', function () { openPlan(b.getAttribute('data-add'), null, Number(b.getAttribute('data-suggest')) || 0); }); });
+    v.querySelector('[data-go-activity]').addEventListener('click', function () { go('activity'); });
+  }
+  function openPlan(kind, row, suggest) {
+    state.plan = { kind: kind, row: row };
+    var titles = { fixed: 'Fixed bill', nonmonthly: 'Yearly or occasional cost', flexible: 'Flexible number' };
+    $('planTitle').textContent = (row ? 'Change ' : 'Add ') + titles[kind].toLowerCase();
+    $('pfName').hidden = kind === 'flexible'; $('pfDue').hidden = kind !== 'fixed'; $('pfTarget').hidden = kind !== 'nonmonthly'; $('pfEvery').hidden = kind !== 'nonmonthly';
+    $('pfAmount').hidden = kind === 'nonmonthly'; $('pfCat').hidden = kind === 'flexible';
+    $('planAmountLabel').textContent = kind === 'flexible' ? 'Amount for the month (Rp)' : 'Amount per month (Rp)';
+    $('planName').value = row ? row.item : ''; $('planName').disabled = !!row;
+    $('planAmount').value = row ? (kind === 'flexible' ? row.amount : row.amount) || '' : (suggest || '');
+    $('planDue').value = row && row.dueDay ? row.dueDay : '';
+    $('planTarget').value = row && row.target ? row.target : ''; $('planEvery').value = row && row.every ? row.every : '';
+    var sel = $('planCat'); sel.innerHTML = '<option value="">None</option>';
+    (state.cats || []).filter(function (c) { return !c.held; }).forEach(function (c) { var o = document.createElement('option'); o.value = c.category; o.textContent = c.category; sel.appendChild(o); });
+    sel.value = row && row.category ? row.category : '';
+    $('planHint').textContent = { fixed: 'Pick the category it is paid under so Hanaro can mark it paid by itself.', nonmonthly: 'Hanaro sets aside the target divided by the months. Pick the category so spending on it shows up here.', flexible: 'Fixed and non-monthly categories are left out of this number.' }[kind];
+    $('planMsg').textContent = ''; $('planRemove').hidden = !row || kind === 'flexible';
+    $('planEdit').hidden = false; window.scrollTo(0, 0);
+  }
+  function closePlan() { $('planEdit').hidden = true; }
+  $('planBack').addEventListener('click', closePlan);
+  var digits = function (id) { return Number($(id).value.replace(/[^\d]/g, '')); };
+  $('planSave').addEventListener('click', function () {
+    var p = state.plan, k = p.kind, m = $('planMsg'); m.textContent = '';
+    var args = { kind: k, item: p.row ? p.row.item : $('planName').value.trim(), category: $('planCat').value };
+    if (k !== 'flexible' && !args.item) { m.textContent = 'Type a name for this item.'; return; }
+    if (k === 'nonmonthly') {
+      args.target = digits('planTarget'); args.every = digits('planEvery');
+      if (!args.target) { m.textContent = 'Type the target amount as a number.'; return; }
+      if (!args.every) { m.textContent = 'Type how many months it covers, for example 6 or 12.'; return; }
+    } else {
+      args.amount = digits('planAmount');
+      if (!args.amount) { m.textContent = 'Type the amount as a number.'; return; }
+      if (k === 'fixed') { var dd = digits('planDue'); args.dueDay = $('planDue').value.trim() === '' ? '' : dd; if (args.dueDay !== '' && (dd < 1 || dd > 31)) { m.textContent = 'The due day must be from 1 to 31.'; return; } }
+    }
+    closePlan(); banner('Saved');
+    send('set_plan', args, 'the plan for ' + (args.item || 'Flexible')).then(function (ok) { if (ok && !queue.length) { bootP = null; render(); } });
+  });
+  $('planRemove').addEventListener('click', function () {
+    var p = state.plan; if (!p.row) return;
+    if (!confirm('Remove ' + p.row.item + ' from the plan?')) return;
+    closePlan(); banner('Removed');
+    send('remove_plan', { item: p.row.item, kind: p.kind }, 'removing ' + p.row.item).then(function (ok) { if (ok && !queue.length) { bootP = null; render(); } });
+  });
 
   /* ---------- categories ---------- */
   function ensureCats() {
@@ -513,7 +623,7 @@
       saver('saveBal', 'data-bal', '[data-err-bal]', 'set_balance', ['account', 'amount'], 'Balances');
       saver('saveCap', 'data-cap', '[data-err-cap]', 'set_cap', ['bucket', 'cap'], 'Caps');
       $('openPlaces').addEventListener('click', function () { go('payees'); });
-      $('signOut').addEventListener('click', function () { if (confirm('Disconnect this device from Hanaro?')) { ['key', 'url', 'queue', 'lastsync'].forEach(function (k) { LS.del('hanaro.' + k); }); ['home', 'review', 'activity', 'categories', 'status'].forEach(function (k) { LS.del('hanaro.cache.' + k); }); location.reload(); } });
+      $('signOut').addEventListener('click', function () { if (confirm('Disconnect this device from Hanaro?')) { ['key', 'url', 'queue', 'lastsync'].forEach(function (k) { LS.del('hanaro.' + k); }); ['home', 'review', 'activity', 'categories', 'status', 'plan'].forEach(function (k) { LS.del('hanaro.cache.' + k); }); location.reload(); } });
     })();
   }
 
@@ -727,7 +837,7 @@
       h.avgPerDay = Math.round(h.spentMonth / Math.max(1, Number(now.slice(8, 10))));
     });
     closeAdd(); banner('Saved');
-    var c0 = snap(state.view); if (c0 && state.view !== 'status' && !editing($('view'))) ({ home: paintHome, review: paintReview, activity: paintActivity })[state.view]($('view'), c0.d);
+    var c0 = snap(state.view === 'spending' ? 'plan' : state.view); if (c0 && state.view !== 'status' && !editing($('view'))) ({ home: paintHome, review: paintReview, activity: paintActivity, spending: paintSpending })[state.view]($('view'), c0.d);
     send('add_txn', { kind: kind, amount: amt, payee: payee, category: cat, account: acct, memo: memo, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null, photo: photo || undefined }, label).then(function (ok) { if (ok && !queue.length) render(); });
   });
 
