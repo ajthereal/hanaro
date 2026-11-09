@@ -301,6 +301,7 @@ function computeHome(d) {
   var insight = hot ? hot.bucket + ' is at ' + hot.pct + '%. Staying under it keeps the daily number steady through ' + monthName_(horizon) + '.'
     : (capped.length ? 'Every bucket is under 80%. Nice and steady.' : 'Add bucket caps in Status to see how each area is doing.');
 
+  var planNow = computePlan_({ plan: d.plan || [], txns: d.txns, accounts: d.accounts, today: today });
   var items = reviewItems(d.txns);
   var spend = spendTotals_(d.txns, d.accounts, today);
   var settledNow = settledPayNow(d.txns);
@@ -315,8 +316,112 @@ function computeHome(d) {
     heldTotal: heldTotal, heldByType: heldByType,
     debtDown: Math.round(paidNow - newCard), debtCost: cost === null ? null : Math.round(cost),
     reviewCount: items.length, payNowCount: items.filter(function (i) { return i.kind === 'pay_now'; }).length,
-    lastSync: summary.last_sync_ok || null
+    lastSync: summary.last_sync_ok || null,
+    pacing: planNow.flexible, compare: planNow.compare, hasPlan: !!(d.plan && d.plan.length)
   };
+}
+
+
+/* ---------- Plan: planned amounts in three buckets (Fixed, Non-monthly, Flexible) ---------- */
+
+function daysInMonth_(ym) {
+  var y = Number(ym.slice(0, 4)), m = Number(ym.slice(5, 7));
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+function prevMonth_(ym) {
+  var y = Number(ym.slice(0, 4)), m = Number(ym.slice(5, 7)) - 1;
+  if (m < 1) { m = 12; y--; }
+  return y + '-' + (m < 10 ? '0' : '') + m;
+}
+
+/** Family purchases only: not void, unread or duplicate, and never from a business (PT) account. */
+function familySpend_(txns, accounts) {
+  var pt = {}; (accounts || []).forEach(function (a) { if (a.entity === 'PT') pt[a.account] = true; });
+  return (txns || []).filter(function (t) { return countsAsSpend_(t) && !pt[t.account]; })
+    .map(function (t) { return { day: day_(t.timestamp || t.date), cat: t.category || '', n: num_(t.idr_amount) }; });
+}
+
+/** Latest row per item (month up to this month). Removing an item adds a row with active N. */
+function planLatest_(rows, month) {
+  var best = {};
+  (rows || []).forEach(function (r) {
+    var m = String(r.month).slice(0, 7);
+    if (!r.item || m > month) return;
+    var cur = best[r.item];
+    if (!cur || m >= String(cur.month).slice(0, 7)) best[r.item] = r;
+  });
+  return Object.keys(best).map(function (k) { return best[k]; }).filter(function (r) { return String(r.active).toUpperCase() !== 'N'; });
+}
+
+/** Running total of spending for each day of a month: [day1, day1+day2, ...]. */
+function cumulative_(spend, ym, upTo) {
+  var out = [], run = 0;
+  for (var d = 1; d <= upTo; d++) {
+    var iso = ym + '-' + (d < 10 ? '0' : '') + d;
+    spend.forEach(function (x) { if (x.day === iso) run += x.n; });
+    out.push(run);
+  }
+  return out;
+}
+
+/** This month so far against the same days last month. */
+function monthCompare_(txns, accounts, today) {
+  var ym = today.slice(0, 7), pm = prevMonth_(ym), day = Number(today.slice(8, 10));
+  var spend = familySpend_(txns, accounts), lastDays = daysInMonth_(pm);
+  var thisSeries = cumulative_(spend, ym, day), lastSeries = cumulative_(spend, pm, lastDays);
+  var lastSame = lastSeries[Math.min(day, lastDays) - 1] || 0, thisSame = thisSeries[day - 1] || 0;
+  return { thisSpent: thisSame, lastSpent: lastSame, diff: lastSame - thisSame, thisSeries: thisSeries, lastSeries: lastSeries, hasLast: lastSeries[lastDays - 1] > 0 };
+}
+
+/**
+ * The plan for the current month. d = { plan, txns, accounts, today }.
+ * Fixed: a bill with an amount and a due day. Non-monthly: a target spread over its months, set aside each month.
+ * Flexible: one number for everything that is not in the other two buckets.
+ */
+function computePlan_(d) {
+  var today = d.today, ym = today.slice(0, 7), day = Number(today.slice(8, 10)), dim = daysInMonth_(ym);
+  var items = planLatest_(d.plan, ym), spend = familySpend_(d.txns, d.accounts);
+  var byCat = {}, planned = {};
+  spend.forEach(function (x) { if (x.day.slice(0, 7) === ym) byCat[x.cat] = (byCat[x.cat] || 0) + x.n; });
+  var fixed = [], non = [], flexRow = null;
+  items.forEach(function (r) {
+    if (r.category) planned[r.category] = true;
+    var spent = r.category ? (byCat[r.category] || 0) : 0;
+    if (r.kind === 'fixed') {
+      var amt = num_(r.amount_idr), due = null, daysTo = null, status = 'later';
+      if (has_(r.due_day) && r.due_day !== '') {
+        var dd = Math.min(Number(r.due_day), dim);
+        due = ym + '-' + (dd < 10 ? '0' : '') + dd; daysTo = daysBetween_(today, due);
+      }
+      if (r.category && spent >= amt * 0.95 && amt > 0) status = 'paid';
+      else if (daysTo !== null && daysTo < 0) status = 'late';
+      else if (daysTo !== null && daysTo <= 3) status = 'soon';
+      fixed.push({ item: r.item, amount: amt, dueDay: due ? Number(due.slice(8, 10)) : null, due: due, daysTo: daysTo, spent: spent, category: r.category || '', status: status });
+    } else if (r.kind === 'nonmonthly') {
+      var target = num_(r.target_idr), every = Math.max(1, num_(r.every_months) || 12);
+      non.push({ item: r.item, target: target, every: every, setAside: Math.ceil(target / every), spent: spent, category: r.category || '' });
+    } else if (r.kind === 'flexible') flexRow = r;
+  });
+  var flexSpent = 0;
+  spend.forEach(function (x) { if (x.day.slice(0, 7) === ym && !planned[x.cat]) flexSpent += x.n; });
+  var flexible = null;
+  if (flexRow) {
+    var amount = num_(flexRow.amount_idr), expected = Math.round(amount * day / dim), left = amount - flexSpent, daysLeft = dim - day + 1;
+    var status2 = flexSpent <= expected ? 'on' : (flexSpent <= expected * 1.1 ? 'near' : 'over');
+    flexible = { amount: amount, spent: flexSpent, left: left, daysLeft: daysLeft, perDay: Math.max(0, Math.floor(left / daysLeft / 1000) * 1000),
+      expected: expected, under: expected - flexSpent, dayFrac: day / dim, day: day, daysInMonth: dim, status: status2 };
+  }
+  // Suggestion for the flexible number: the average of the last 3 months, outside the planned categories.
+  var suggest = null, ms = [], m1 = prevMonth_(ym), m2 = prevMonth_(m1), m3 = prevMonth_(m2);
+  [m1, m2, m3].forEach(function (m) {
+    var t = 0; spend.forEach(function (x) { if (x.day.slice(0, 7) === m && !planned[x.cat]) t += x.n; });
+    if (t > 0) ms.push(t);
+  });
+  if (ms.length) suggest = Math.round(ms.reduce(function (a, b) { return a + b; }, 0) / ms.length / 100000) * 100000;
+  var plannedTotal = fixed.reduce(function (a, f) { return a + f.amount; }, 0) + non.reduce(function (a, n) { return a + n.setAside; }, 0) + (flexible ? flexible.amount : 0);
+  return { month: ym, fixed: fixed, nonmonthly: non, flexible: flexible, suggestFlexible: suggest, planned: plannedTotal,
+    fixedTotal: fixed.reduce(function (a, f) { return a + f.amount; }, 0), setAsideTotal: non.reduce(function (a, n) { return a + n.setAside; }, 0),
+    compare: monthCompare_(d.txns, d.accounts, today) };
 }
 
 /** Bucket for a category name, from the Categories rows. */
@@ -331,5 +436,5 @@ function ruleKey(payee) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { findMatches_: findMatches_, dropMatchedManual_: dropMatchedManual_, payeeSummary_: payeeSummary_, eveningText_: eveningText_, spendTotals_: spendTotals_, weekStart_: weekStart_, computeHome: computeHome, reviewItems: reviewItems, settledPayNow: settledPayNow, bucketForCategory: bucketForCategory, ruleKey: ruleKey, nextDue_: nextDue_, firstOfNextMonth_: firstOfNextMonth_ };
+  module.exports = { computePlan_: computePlan_, monthCompare_: monthCompare_, planLatest_: planLatest_, findMatches_: findMatches_, dropMatchedManual_: dropMatchedManual_, payeeSummary_: payeeSummary_, eveningText_: eveningText_, spendTotals_: spendTotals_, weekStart_: weekStart_, computeHome: computeHome, reviewItems: reviewItems, settledPayNow: settledPayNow, bucketForCategory: bucketForCategory, ruleKey: ruleKey, nextDue_: nextDue_, firstOfNextMonth_: firstOfNextMonth_ };
 }

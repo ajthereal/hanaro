@@ -50,7 +50,7 @@
   <button id="addBtn" class="add" aria-label="Add transaction">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
   </button>
-  <button data-go="activity" aria-label="Activity"></button>
+  <button data-go="spending" aria-label="Spending"></button>
   <button data-go="status" aria-label="Status"></button>
 </nav>
 
@@ -85,6 +85,23 @@
   <div class="pickhead"><button id="pickBack" class="roundx" aria-label="Back"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button><div class="pickttl" id="pickTitle">Category</div></div>
   <input id="pickSearch" type="search" placeholder="Search" autocomplete="off">
   <div id="pickList"></div>
+</section>
+
+
+<section id="planEdit" hidden role="dialog" aria-modal="true" aria-label="Plan item">
+  <div class="pickhead"><button id="planBack" class="roundx" aria-label="Back"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button><div class="pickttl" id="planTitle">Plan item</div></div>
+  <div class="fields" style="margin:0">
+    <div class="field" id="pfName"><label for="planName">Name</label><input id="planName" autocomplete="off" autocapitalize="words" placeholder="For example, Rent"></div>
+    <div class="field" id="pfAmount"><label for="planAmount" id="planAmountLabel">Amount per month (Rp)</label><input id="planAmount" inputmode="numeric" autocomplete="off" placeholder="0"></div>
+    <div class="field" id="pfDue"><label for="planDue">Due day of the month (optional)</label><input id="planDue" inputmode="numeric" autocomplete="off" placeholder="For example, 1"></div>
+    <div class="field" id="pfTarget"><label for="planTarget">Target amount (Rp)</label><input id="planTarget" inputmode="numeric" autocomplete="off" placeholder="0"></div>
+    <div class="field" id="pfEvery"><label for="planEvery">Covers how many months</label><input id="planEvery" inputmode="numeric" autocomplete="off" placeholder="For example, 12"></div>
+    <div class="field" id="pfCat"><label for="planCat">Category it is spent in (optional)</label><select id="planCat"></select></div>
+  </div>
+  <p id="planHint" class="note" style="margin:12px 4px 0"></p>
+  <p id="planMsg" class="err" role="alert"></p>
+  <button id="planSave" class="primary" style="margin-top:8px">Save</button>
+  <button id="planRemove" class="ghost" style="margin-top:10px" hidden>Remove from plan</button>
 </section>
 
 <script src="app.js"></script>
