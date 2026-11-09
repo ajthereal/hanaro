@@ -124,3 +124,17 @@ button.rc{font-size:12px;padding:4px 0;min-height:32px;color:var(--muted)}
 .plrow .l{min-width:0}.plrow .p{font-weight:600;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .plcat{flex:none;border:1px solid #B7DAD6;background:#F4FAF8;border-radius:16px;padding:7px 12px;font-size:13px;color:var(--teal);min-height:36px}.plcat.none{color:#8AA0A8}
 #photoMsg{display:block}
+
+/* Spending and plan */
+.pace{position:relative;height:10px;border-radius:5px;background:var(--line);margin:12px 0 6px}
+.pace .f{height:10px;border-radius:5px;background:linear-gradient(90deg,#2FB5B0,#5BC0E8)}
+.pace.near .f{background:linear-gradient(90deg,#F4D35E,#E9B949)}.pace.over .f{background:linear-gradient(90deg,#F7A58F,var(--coral))}
+.pace .tick{position:absolute;top:-5px;width:2px;height:20px;background:var(--text);border-radius:1px}
+.pacefoot{display:flex;justify-content:space-between;font-size:11.5px;color:var(--muted);gap:8px}
+.mid{font-size:28px;font-weight:300;letter-spacing:-.5px}
+.prow2{display:flex;width:100%;justify-content:space-between;align-items:center;gap:10px;border:0;border-bottom:1px solid var(--line);background:none;font:inherit;color:var(--text);padding:12px 0;min-height:52px;text-align:left}
+.prow2:last-child{border-bottom:0}.prow2 .l{min-width:0}.prow2 .p{font-weight:600;font-size:14.5px}.prow2 .s{display:block;font-size:11.5px;color:var(--muted)}.prow2 .r{text-align:right;white-space:nowrap;font-size:14.5px}
+.tag.soon{background:var(--yellow);color:var(--yellowText)}.tag.late{background:#FFE9E5;color:var(--warn)}
+.cardhead{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+button.addrow{border:0;background:none;color:var(--teal);font-weight:600;font-size:14px;text-align:left;padding:12px 0 4px;min-height:44px}
+#planEdit{position:fixed;inset:0;z-index:30;background:#F4FAF8;overflow:auto;padding:max(14px,env(safe-area-inset-top)) 16px 40px;max-width:520px;margin:0 auto}

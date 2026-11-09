@@ -276,6 +276,43 @@ const pay = L.payeeSummary_([T({ payee: 'Sate Tegal', idr_amount: 50000, categor
 eq('payee list groups the same place', [pay.length, pay[0].count, pay[0].total, pay[0].category, pay[0].trusted], [1, 2, 110000, 'Eating out', true]);
 eq('evening text', L.eveningText_({ spentToday: 150000, spentTodayCount: 2, toPayCount: 3, toPayTotal: 330000, reviewCount: 5 }).split('\n').length, 4);
 
+// plan: buckets, flexible pacing, last-month comparison (invented numbers)
+const pt = (id, amt, cat, ts, extra) => T(Object.assign({ id: id, idr_amount: amt, category: cat, timestamp: ts, status: 'confirmed' }, extra || {}));
+const planRows = [
+  { month: '2026-10', item: 'Rent', kind: 'fixed', amount_idr: 4000000, due_day: 1, category: 'Rent', active: 'Y' },
+  { month: '2026-11', item: 'Rent', kind: 'fixed', amount_idr: 4500000, due_day: 1, category: 'Rent', active: 'Y' },
+  { month: '2026-11', item: 'School fees', kind: 'fixed', amount_idr: 2400000, due_day: 23, category: 'School', active: 'Y' },
+  { month: '2026-11', item: 'Car service', kind: 'nonmonthly', target_idr: 3000000, every_months: 6, category: 'Car', active: 'Y' },
+  { month: '2026-11', item: 'Flexible', kind: 'flexible', amount_idr: 3000000, active: 'Y' }
+];
+const planTx = [
+  pt('p1', 4500000, 'Rent', '2026-11-01T09:00:00+07:00'),
+  pt('p2', 1000000, 'Groceries', '2026-11-05T12:00:00+07:00'),
+  pt('p3', 500000, 'Eating out', '2026-11-10T12:00:00+07:00'),
+  pt('p4', 900000, 'Groceries', '2026-11-14T12:00:00+07:00', { account: 'Bank PT' }),
+  pt('p5', 300000, 'Groceries', '2026-11-15T12:00:00+07:00', { status: 'needs_review' }),
+  pt('o1', 2000000, 'Groceries', '2026-10-03T12:00:00+07:00'),
+  pt('o2', 1500000, 'Eating out', '2026-10-18T12:00:00+07:00')
+];
+const planAcc = [{ account: 'Bank A', type: 'bank' }, { account: 'Bank PT', type: 'bank', entity: 'PT' }];
+const pl = L.computePlan_({ plan: planRows, txns: planTx, accounts: planAcc, today: '2026-11-20' });
+eq('plan uses the newest amount for an item', pl.fixed.find((f) => f.item === 'Rent').amount, 4500000);
+eq('fixed bill is paid when its category covers it', pl.fixed.find((f) => f.item === 'Rent').status, 'paid');
+eq('fixed bill due in 3 days is soon', pl.fixed.find((f) => f.item === 'School fees').status, 'soon');
+eq('non-monthly set aside is target over months', pl.nonmonthly[0].setAside, 500000);
+eq('flexible spend skips planned categories, PT and unread', pl.flexible.spent, 1500000);
+eq('flexible is on pace when under the line', [pl.flexible.expected, pl.flexible.under, pl.flexible.status], [2000000, 500000, 'on']);
+eq('flexible per day left', [pl.flexible.left, pl.flexible.daysLeft, pl.flexible.perDay], [1500000, 11, 136000]);
+eq('plan total', pl.planned, 4500000 + 2400000 + 500000 + 3000000);
+eq('last month comparison at the same day', [pl.compare.thisSpent, pl.compare.lastSpent, pl.compare.diff], [6000000, 3500000, -2500000]);
+const noPlan = L.computePlan_({ plan: [], txns: planTx, accounts: planAcc, today: '2026-11-20' });
+eq('no plan means no flexible card and a suggestion', [noPlan.flexible, noPlan.suggestFlexible], [null, 3500000]);
+const over = L.computePlan_({ plan: planRows, txns: planTx.concat([pt('p6', 900000, 'Fun', '2026-11-16T12:00:00+07:00')]), accounts: planAcc, today: '2026-11-20' });
+eq('flexible over the line is flagged', over.flexible.status, 'over');
+const removed = L.planLatest_(planRows.concat([{ month: '2026-11', item: 'School fees', kind: 'fixed', active: 'N' }]), '2026-11').map((r) => r.item).sort();
+eq('removed item disappears, history stays', removed, ['Car service', 'Flexible', 'Rent']);
+eq('home carries pacing and comparison', [L.computeHome(Object.assign({}, base, { plan: planRows, txns: planTx })).pacing.amount, L.computeHome(base).pacing], [3000000, null]);
+
 failed += require('./glue.js');
 
 console.log(failed ? '\n' + failed + ' FAILED' : '\nAll passed');

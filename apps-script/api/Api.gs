@@ -107,9 +107,64 @@ function data_(book, who) {
   txns = dropMatchedManual_(txns);
   return {
     book: book, accounts: accounts, txns: txns, buckets: rows_(book, 'Buckets'), balances: rows_(book, 'Balances'),
-    bills: rows_(book, 'Bills'), debts: rows_(book, 'Debts'), summary: rows_(book, 'Summary'),
+    plan: planRows_(book), bills: rows_(book, 'Bills'), debts: rows_(book, 'Debts'), summary: rows_(book, 'Summary'),
     today: Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM-dd')
   };
+}
+
+var PLAN_HEADERS = ['month', 'item', 'kind', 'amount_idr', 'due_day', 'target_idr', 'every_months', 'category', 'active', 'set_by'];
+
+/** The Plan tab is created the first time a plan is saved. Until then there is simply no plan. */
+function planRows_(book) { return book.getSheetByName('Plan') ? rows_(book, 'Plan') : []; }
+
+function ensurePlan_(book) {
+  var sh = book.getSheetByName('Plan');
+  if (sh) return;
+  sh = book.insertSheet('Plan');
+  sh.getRange(1, 1, 1, PLAN_HEADERS.length).setValues([PLAN_HEADERS]);
+}
+
+function planView_(book, who) {
+  var d = data_(book, who);
+  return computePlan_({ plan: d.plan, txns: d.txns, accounts: d.accounts, today: d.today });
+}
+
+/** Saves one planned item for this month. History is kept: a change adds a row, it never overwrites. */
+function setPlan_(book, who, req) {
+  var kind = String(req.kind || ''), item = String(req.item || '').trim();
+  if (['fixed', 'nonmonthly', 'flexible'].indexOf(kind) === -1) throw userError_('Choose Fixed, Non-monthly or Flexible.');
+  if (kind === 'flexible') item = 'Flexible';
+  if (!item) throw userError_('Type a name for this item.');
+  if (item.length > 40) throw userError_('Keep the name under 40 characters.');
+  var row = { month: Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM'), item: item, kind: kind, active: 'Y', set_by: NAMES[who], category: req.category || '' };
+  if (kind === 'nonmonthly') {
+    var target = Number(req.target), every = Number(req.every);
+    if (isNaN(target) || target <= 0) throw userError_('Type the target amount as a number above zero.');
+    if (isNaN(every) || every < 1 || every > 60 || Math.round(every) !== every) throw userError_('Type how many months it covers, for example 6 or 12.');
+    row.target_idr = target; row.every_months = every;
+  } else {
+    var amt = Number(req.amount);
+    if (isNaN(amt) || amt <= 0) throw userError_('Type the amount as a number above zero.');
+    row.amount_idr = amt;
+    if (kind === 'fixed' && req.dueDay !== '' && req.dueDay !== null && req.dueDay !== undefined) {
+      var dd = Number(req.dueDay);
+      if (isNaN(dd) || dd < 1 || dd > 31 || Math.round(dd) !== dd) throw userError_('Type the due day as a number from 1 to 31.');
+      row.due_day = dd;
+    }
+  }
+  ensurePlan_(book);
+  append_(book, 'Plan', [row]);
+  audit_(book, NAMES[who], 'set_plan', 'Plan', item, kind, '', row.amount_idr || row.target_idr);
+  return { saved: true };
+}
+
+function removePlan_(book, who, req) {
+  var item = String(req.item || '').trim();
+  if (!item) throw userError_('Choose an item to remove.');
+  ensurePlan_(book);
+  append_(book, 'Plan', [{ month: Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM'), item: item, kind: req.kind || '', active: 'N', set_by: NAMES[who] }]);
+  audit_(book, NAMES[who], 'remove_plan', 'Plan', item, '', '', '');
+  return { saved: true };
 }
 
 function slim_(t, settled) {
@@ -133,6 +188,9 @@ function handle_(req, who) {
     return h;
   }
   if (a === 'bootstrap') return bootstrap_(book, who);
+  if (a === 'plan') return planView_(book, who);
+  if (a === 'set_plan') return setPlan_(book, who, req);
+  if (a === 'remove_plan') return removePlan_(book, who, req);
   if (a === 'review') {
     var d2 = data_(book, who), settled = settledPayNow(d2.txns), byId = {};
     d2.txns.forEach(function (t) { byId[t.id] = t; });
@@ -350,7 +408,8 @@ function bootstrap_(book, who) {
   var cats = rows_(book, 'Categories').filter(function (c) { return String(c.active).toUpperCase() !== 'N'; })
     .map(function (c) { return { category: c.category, bucket: c.bucket, held: String(c.counts_in_bucket).toUpperCase() === 'HELD' }; });
   var accts = d.accounts.filter(function (x) { return x.active !== 'N' && x.entity !== 'PT' && (x.type === 'bank' || x.type === 'credit card'); }).map(function (x) { return x.account; });
-  return { home: home, review: { items: review }, activity: { items: activity }, categories: { categories: cats, accounts: accts } };
+  var plan = computePlan_({ plan: d.plan, txns: d.txns, accounts: d.accounts, today: d.today });
+  return { home: home, review: { items: review }, activity: { items: activity }, categories: { categories: cats, accounts: accts }, plan: plan };
 }
 
 

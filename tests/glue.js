@@ -15,7 +15,7 @@ function makeBook(tabs) {
     }),
     appendRow: (row) => { data[name].push(row); }
   });
-  return { data, getSheetByName: (n) => (data[n] ? sheet(n) : null), getSpreadsheetTimeZone: () => 'Asia/Jakarta' };
+  return { data, getSheetByName: (n) => (data[n] ? sheet(n) : null), getSpreadsheetTimeZone: () => 'Asia/Jakarta', insertSheet: (n) => { data[n] = [[]]; return sheet(n); } };
 }
 
 const files = [];
@@ -81,9 +81,25 @@ eq('unknown category is refused plainly', err, 'Choose a category from the list.
 const h1 = run("addTxn_(book_(), 'aj', { kind: 'held', amount: 500000, payee: 'Customer A', category: 'Held: Customer order' })");
 eq('held entry saved as held_in', col(sb.__book.data.Transactions.find((r) => r[0] === h1.id), 'txn_type'), 'held_in');
 
+
+// plan saving: the tab appears on first save, history is kept, bad input is refused plainly
+eq('no plan tab means no plan', run("planRows_(book_())"), []);
+run("setPlan_(book_(), 'aj', { kind: 'flexible', amount: 4000000 })");
+run("setPlan_(book_(), 'aj', { kind: 'nonmonthly', item: 'Car tax', target: 4800000, every: 12, category: 'Car' })");
+run("setPlan_(book_(), 'cynthia', { kind: 'fixed', item: 'Rent', amount: 4500000, dueDay: 1 })");
+run("setPlan_(book_(), 'aj', { kind: 'fixed', item: 'Rent', amount: 4600000, dueDay: 1 })");
+const planTab = sb.__book.data.Plan;
+eq('plan rows are appended, never overwritten', [planTab.length, planTab[0][1]], [5, 'item']);
+const pv = run("planView_(book_(), 'aj')");
+eq('plan view reads the newest rent', [pv.fixed[0].amount, pv.flexible.amount, pv.nonmonthly[0].setAside], [4600000, 4000000, 400000]);
+let perr = ''; try { run("setPlan_(book_(), 'aj', { kind: 'fixed', item: 'X', amount: 'abc' })"); } catch (e) { perr = e.userMessage; }
+eq('bad plan amount is refused plainly', perr, 'Type the amount as a number above zero.');
+run("removePlan_(book_(), 'aj', { item: 'Rent', kind: 'fixed' })");
+eq('removed plan item is gone from the view', run("planView_(book_(), 'aj')").fixed.length, 0);
+
 // bootstrap shape
 const b = run("bootstrap_(book_(), 'aj')");
-eq('bootstrap has every screen', Object.keys(b).sort(), ['activity', 'categories', 'home', 'review']);
+eq('bootstrap has every screen', Object.keys(b).sort(), ['activity', 'categories', 'home', 'plan', 'review']);
 eq('evening text is written', (run("eveningRun()"), sb.__book.data.Summary.some((r) => r[0] === 'evening_text' && /Evening check/.test(r[1]))), true);
 
 module.exports = failed;
