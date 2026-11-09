@@ -138,3 +138,6 @@ button.rc{font-size:12px;padding:4px 0;min-height:32px;color:var(--muted)}
 .cardhead{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
 button.addrow{border:0;background:none;color:var(--teal);font-weight:600;font-size:14px;text-align:left;padding:12px 0 4px;min-height:44px}
 #planEdit{position:fixed;inset:0;z-index:30;background:#F4FAF8;overflow:auto;padding:max(14px,env(safe-area-inset-top)) 16px 40px;max-width:520px;margin:0 auto}
+
+.chk{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:600;color:var(--text)}.chk input{appearance:auto;-webkit-appearance:checkbox;width:24px;height:24px;min-height:0;padding:0;flex:none;margin:0;accent-color:var(--teal)}
+.ptrow{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--line)}.ptrow .s{font-size:12px;color:var(--muted)}

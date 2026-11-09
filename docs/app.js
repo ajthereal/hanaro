@@ -308,6 +308,7 @@
       html += '<div class="card"><div class="label">Flexible</div><p class="note">One number for groceries, eating out, fuel, fun and everything else that moves.' + (p.suggestFlexible ? ' You spent about ' + rpShort(p.suggestFlexible) + ' a month on this over the last 3 months.' : '') + '</p>' +
         '<button class="primary small" data-add="flexible"' + (p.suggestFlexible ? ' data-suggest="' + p.suggestFlexible + '"' : '') + '>' + (p.suggestFlexible ? 'Use ' + rpShort(p.suggestFlexible) : 'Set the flexible number') + '</button></div>';
     }
+    html += '<div class="card"><div class="label">Filed for PT AHU</div><p class="note">Everything you filed for the company this month, with receipts, for your accountant. It still counts in your family spending.</p><div id="ptList"></div><button class="ghost" id="ptOpen">Show this month</button></div>';
     html += '<button class="ghost" data-go-activity>See all transactions</button>';
     v.innerHTML = html;
     v.querySelectorAll('[data-edit]').forEach(function (b) { b.addEventListener('click', function () {
@@ -316,6 +317,17 @@
     }); });
     v.querySelectorAll('[data-add]').forEach(function (b) { b.addEventListener('click', function () { openPlan(b.getAttribute('data-add'), null, Number(b.getAttribute('data-suggest')) || 0); }); });
     v.querySelector('[data-go-activity]').addEventListener('click', function () { go('activity'); });
+    $('ptOpen').addEventListener('click', function () {
+      var b = $('ptOpen'); b.textContent = 'Loading…';
+      flush().then(function () { return api('pt_file_list', {}); }).then(function (r) {
+        var h = '<p class="note"><b>' + r.items.length + ' filed, ' + rp(r.total) + '</b>' + (r.missingReceipts ? ' · ' + r.missingReceipts + ' without a receipt photo' : '') + '</p>';
+        r.items.forEach(function (i) {
+          h += '<div class="ptrow"><span><span class="p">' + esc(i.payee || '(no name)') + '</span><div class="s">' + esc(i.date) + ' · ' + esc(i.category) + (i.receipt ? ' · <a href="' + esc(i.receipt) + '" target="_blank" rel="noopener">Receipt</a>' : ' · no receipt') + '</div></span><span>' + rp(i.amount) + '</span></div>';
+        });
+        if (!r.items.length) h += '<p class="note">Nothing filed yet this month.</p>';
+        $('ptList').innerHTML = h; b.hidden = true;
+      }, function (e) { b.textContent = 'Show this month'; banner(e.message, true); });
+    });
   }
   function openPlan(kind, row, suggest) {
     state.plan = { kind: kind, row: row };
@@ -531,6 +543,13 @@
   }
 
   /* ---------- Activity ---------- */
+  /** Business or family, and filed for PT AHU: two small switches on each purchase. */
+  function tagBtns(t) {
+    if (t.type !== 'purchase' || String(t.id).indexOf('local_') === 0) return '';
+    var biz = t.entity === 'Business';
+    return '<div><button class="link rc" data-ent="' + esc(t.id) + '" data-to="' + (biz ? 'Family' : 'Business') + '">' + (biz ? 'Business · Mark as family' : 'Mark as business') + '</button> ' +
+      '<button class="link rc" data-pt="' + esc(t.id) + '" data-to="' + (t.ptFile ? '' : 'Y') + '">' + (t.ptFile ? 'Filed for PT AHU ✓ · Undo' : 'File for PT AHU') + '</button></div>';
+  }
   function paintActivity(v, d) {
     (function () {
       var html = '<div style="' + TITLE + '">Activity</div>';
@@ -548,10 +567,20 @@
         else if (t.type === 'income') tag = '<span class="tag paid">RECEIVED</span>';
         else if (t.type === 'held_in') tag = '<span class="tag new">HELD FOR OTHERS</span>';
         else if (t.type === 'held_out') tag = '<span class="tag new">PASSED ON</span>';
-        html += '<div class="act"><div class="l"><div class="p">' + esc(t.payee || '(no name)') + '</div><div class="sub">' + esc(t.category || (t.type === 'payment' ? 'Paid to your card' : t.type === 'transfer' ? 'Sent to someone' : 'No category yet')) + ' · ' + esc(t.account) + '</div>' + (tag ? '<div style="margin-top:4px">' + tag + '</div>' : '') + (t.type === 'purchase' && String(t.id).indexOf('local_') !== 0 ? '<button class="link rc" data-photo="' + esc(t.id) + '">' + (t.receipt ? 'Receipt saved ✓ · Replace' : 'Add receipt photo') + '</button>' : '') + '</div><div class="r">' + (t.amount === null ? '–' : (t.type === 'income' || t.type === 'held_in' ? '+' : '') + rp(t.amount)) + (t.cleared ? '<span class="clr" title="Confirmed by the bank email">✓</span>' : '') + '</div></div>';
+        html += '<div class="act"><div class="l"><div class="p">' + esc(t.payee || '(no name)') + '</div><div class="sub">' + esc(t.category || (t.type === 'payment' ? 'Paid to your card' : t.type === 'transfer' ? 'Sent to someone' : 'No category yet')) + ' · ' + esc(t.account) + '</div>' + (tag ? '<div style="margin-top:4px">' + tag + '</div>' : '') + (t.type === 'purchase' && String(t.id).indexOf('local_') !== 0 ? '<button class="link rc" data-photo="' + esc(t.id) + '">' + (t.receipt ? 'Receipt saved ✓ · Replace' : 'Add receipt photo') + '</button>' : '') + tagBtns(t) + '</div><div class="r">' + (t.amount === null ? '–' : (t.type === 'income' || t.type === 'held_in' ? '+' : '') + rp(t.amount)) + (t.cleared ? '<span class="clr" title="Confirmed by the bank email">✓</span>' : '') + '</div></div>';
       });
       if (open) html += '</div>';
       v.innerHTML = html;
+      v.querySelectorAll('[data-ent],[data-pt]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var isEnt = b.hasAttribute('data-ent'), id = b.getAttribute(isEnt ? 'data-ent' : 'data-pt'), to = b.getAttribute('data-to');
+          patch('activity', function (x) { x.items.forEach(function (t) { if (t.id === id) { if (isEnt) t.entity = to; else t.ptFile = to === 'Y'; } }); });
+          var c = snap('activity'); if (c) paintActivity(v, c.d);
+          banner('Saved');
+          var ch = {}; ch[isEnt ? 'entity' : 'pt_file'] = to;
+          send('update_txn', { id: id, changes: ch }, isEnt ? 'business or family' : 'file for PT AHU').then(function (ok) { if (ok && !queue.length) render(); });
+        });
+      });
       v.querySelectorAll('[data-photo]').forEach(function (b) {
         b.addEventListener('click', function () {
           var id = b.getAttribute('data-photo'), inp = document.createElement('input');
@@ -691,7 +720,7 @@
       var last = LS.get('hanaro.lastacct') || '';
       $('addAcc').innerHTML = '<option value="">Not sure / cash</option>' + state.accounts.map(function (a) { return '<option' + (a === last ? ' selected' : '') + '>' + esc(a) + '</option>'; }).join('');
       ['addAmount', 'addPayee', 'addMemo', 'addNewType'].forEach(function (i) { $(i).value = ''; });
-      $('payeeSug').hidden = true; $('addMsg').textContent = ''; setKind('spent');
+      $('payeeSug').hidden = true; $('addMsg').textContent = ''; setEntity('Family'); $('addPt').checked = false; setKind('spent');
       state.photo = null; $('photoMsg').textContent = ''; $('photoBtn').textContent = 'Take or choose a photo'; locateAdd();
       $('sheetBack').hidden = false; $('sheet').hidden = false; setTimeout(function () { $('addAmount').focus(); }, 50);
     }, function (e) { banner(e.message, true); });
@@ -723,6 +752,7 @@
     $('photoIn').value = '';
   });
   function closeAdd() { $('sheet').hidden = true; $('sheetBack').hidden = true; $('picker').hidden = true; }
+  function setEntity(e) { state.entity = e; $('entFam').className = e === 'Family' ? 'on' : ''; $('entBiz').className = e === 'Business' ? 'on' : ''; }
   function setKind(k) {
     state.kind = k;
     ['Spent:spent', 'Got:got', 'Held:held'].forEach(function (x) { var p = x.split(':'); $('kind' + p[0]).className = k === p[1] ? 'on' : ''; });
@@ -730,7 +760,7 @@
     $('payeeLabel').textContent = k === 'got' ? 'Received from' : 'Payee';
     $('catLabel').textContent = k === 'held' ? 'What kind of money' : 'Category';
     $('accLabel').textContent = k === 'got' ? 'Received into' : 'Account';
-    $('heldHint').hidden = k !== 'held'; setCat('');
+    $('heldHint').hidden = k !== 'held'; $('entityWrap').hidden = k !== 'spent'; $('ptWrap').hidden = k !== 'spent'; setCat('');
   }
   /* Payee suggestions come from what you entered before; picking one fills the category and account too. */
   function payeeSuggestions(q) {
@@ -819,7 +849,7 @@
     // Saved on this device right away; sent in the background.
     var kind = { spent: 'purchase', got: 'income', held: 'held' }[k], acct = $('addAcc').value, memo = $('addMemo').value.trim();
     LS.set('hanaro.lastacct', acct);
-    var geo = state.geo, photo = state.photo;
+    var geo = state.geo, photo = state.photo, entity = k === 'spent' ? (state.entity || 'Family') : '', ptFile = k === 'spent' && $('addPt').checked;
     if (geo && k === 'spent') addPlaces([{ lat: geo.lat, lng: geo.lng, payee: payee, category: cat, account: acct }]);
     var label = rp(amt) + ' ' + payee;
     if (k === 'held' && cat === '__new') {
@@ -830,7 +860,7 @@
     }
     var now = localIso();
     patch('activity', function (d) {
-      d.items.unshift({ id: 'local_' + Date.now(), date: now.slice(0, 10), timestamp: now, type: kind === 'purchase' ? 'purchase' : kind === 'income' ? 'income' : 'held_in', amount: amt, account: acct, payee: payee, category: kind === 'income' ? 'Income' : cat, bucket: '', status: 'confirmed', memo: memo, source: 'manual', payNow: false, paid: false, links: '', who: '', cleared: false, receipt: !!photo, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null });
+      d.items.unshift({ id: 'local_' + Date.now(), date: now.slice(0, 10), timestamp: now, type: kind === 'purchase' ? 'purchase' : kind === 'income' ? 'income' : 'held_in', amount: amt, account: acct, payee: payee, category: kind === 'income' ? 'Income' : cat, bucket: '', status: 'confirmed', memo: memo, entity: entity === 'Business' ? 'Business' : '', ptFile: ptFile, source: 'manual', payNow: false, paid: false, links: '', who: '', cleared: false, receipt: !!photo, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null });
     });
     if (kind === 'purchase') patch('home', function (h) {
       h.spentToday += amt; h.spentWeek += amt; h.spentMonth += amt; h.spentTodayCount += 1;
@@ -838,7 +868,7 @@
     });
     closeAdd(); banner('Saved');
     var c0 = snap(state.view === 'spending' ? 'plan' : state.view); if (c0 && state.view !== 'status' && !editing($('view'))) ({ home: paintHome, review: paintReview, activity: paintActivity, spending: paintSpending })[state.view]($('view'), c0.d);
-    send('add_txn', { kind: kind, amount: amt, payee: payee, category: cat, account: acct, memo: memo, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null, photo: photo || undefined }, label).then(function (ok) { if (ok && !queue.length) render(); });
+    send('add_txn', { kind: kind, amount: amt, payee: payee, category: cat, account: acct, memo: memo, entity: entity, pt_file: ptFile, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null, photo: photo || undefined }, label).then(function (ok) { if (ok && !queue.length) render(); });
   });
 
   /* ---------- start ---------- */

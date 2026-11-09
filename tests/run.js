@@ -201,7 +201,7 @@ eq('month stored as a date still matches', L.computeHome(Object.assign({}, base,
 const lowCash = L.computeHome(Object.assign({}, base, { balances: [{ account: 'Bank A', date_confirmed: '2026-11-19', confirmed_balance: 400000 }] }));
 eq('cash below bills gives zero and says so', [lowCash.safeToSpend, /below/.test(lowCash.notes[0])], [0, true]);
 const noData = L.computeHome(Object.assign({}, base, { balances: [], buckets: [] }));
-eq('no balances: no invented number', [noData.safeToSpend, noData.needs], [null, ['balances', 'caps']]);
+eq('no balances: no invented number', [noData.safeToSpend, noData.needs], [null, ['balances', 'plan']]);
 
 
 // held for others: never ours, comes off cash, tracked per type
@@ -276,6 +276,30 @@ const pay = L.payeeSummary_([T({ payee: 'Sate Tegal', idr_amount: 50000, categor
 eq('payee list groups the same place', [pay.length, pay[0].count, pay[0].total, pay[0].category, pay[0].trusted], [1, 2, 110000, 'Eating out', true]);
 eq('evening text', L.eveningText_({ spentToday: 150000, spentTodayCount: 2, toPayCount: 3, toPayTotal: 330000, reviewCount: 5 }).split('\n').length, 4);
 
+// ---------- YNAB import (apps-script/api/YnabImport.gs) ----------
+const sb3 = { module: { exports: {} }, console };
+vm.createContext(sb3);
+vm.runInContext(fs.readFileSync(path.join(__dirname, '../apps-script/api/Logic.gs'), 'utf8'), sb3);
+sb3.ruleKey = sb3.module.exports.ruleKey;
+vm.runInContext(fs.readFileSync(path.join(__dirname, '../apps-script/api/YnabImport.gs'), 'utf8'), sb3);
+const Y = sb3.module.exports;
+const yt = (o) => Object.assign({ date: '2026-08-01', account_id: 'a1', cleared: 'cleared', deleted: false }, o);
+const flat = Y.flattenYnab_('Plan', [
+  yt({ id: 't1', amount: -50000000, payee_name: 'Sate Tegal', category_id: 'c1', category_name: 'Eat Out' }),
+  yt({ id: 't2', amount: 1000000000, payee_name: 'Client', category_id: 'c2', category_name: 'Income' }),
+  yt({ id: 't3', amount: -100000000, payee_name: 'Mall', category_id: null, subtransactions: [{ amount: -60000000, category_id: 'c1', category_name: 'Eat Out' }, { amount: -40000000, category_id: 'c3', category_name: 'Groceries' }] }),
+  yt({ id: 't4', amount: -1000, deleted: true }),
+  yt({ id: 't5', amount: -20000000, transfer_account_id: 'a2', payee_name: 'Transfer' })
+], [{ id: 'a1', name: 'Card A' }, { id: 'a2', name: 'Bank B' }], [{ name: 'Food', categories: [{ id: 'c1' }] }]);
+eq('import rows: splits, deleted, transfers', flat.map((r) => r.ynab_id + ':' + r.outflow + ':' + r.inflow + ':' + r.transfer_account), ['t1:50000:0:', 't2:0:1000000:', 't3#1:60000:0:', 't3#2:40000:0:', 't5:20000:0:Bank B']);
+eq('import rows: account and group names', [flat[0].account, flat[0].category_group], ['Card A', 'Food']);
+const cmap = Y.ynabCategoryMap_([{ category: 'Eating out', bucket: 'Food & eat out', ynab_categories_mapped: 'Eat Out; Telor' }, { category: 'Groceries', bucket: 'Food & eat out', ynab_categories_mapped: 'Groceries' }]);
+const hist = (payee, cat, n, date) => Array.from({ length: n }, () => ({ payee, category: cat, outflow: 10000, transfer_account: '', date: date || '2026-08-01' }));
+const learned = Y.learnRulesFromHistory_(
+  hist('Sate Tegal', 'Eat Out', 4).concat(hist('Warung Mix', 'Eat Out', 2), hist('Warung Mix', 'Groceries', 2), hist('One Off', 'Eat Out', 1), hist('Known Place', 'Eat Out', 5), hist('Half Trusted', 'Eat Out', 2), hist('BCA', 'Eat Out', 5), hist('Pam', 'Eat Out', 5), hist('Jenius e-Card top up', 'Eat Out', 5)),
+  cmap, [{ match_text: 'known place' }]);
+eq('learned rules: trusted, mixed and one-off payees', learned.map((r) => r.match_text + '>' + r.category + '>' + r.auto_confirm + '>' + r.times_used), ['half trusted>Eating out>N>2', 'sate tegal>Eating out>Y>4']);
+
 // plan: buckets, flexible pacing, last-month comparison (invented numbers)
 const pt = (id, amt, cat, ts, extra) => T(Object.assign({ id: id, idr_amount: amt, category: cat, timestamp: ts, status: 'confirmed' }, extra || {}));
 const planRows = [
@@ -312,6 +336,21 @@ eq('flexible over the line is flagged', over.flexible.status, 'over');
 const removed = L.planLatest_(planRows.concat([{ month: '2026-11', item: 'School fees', kind: 'fixed', active: 'N' }]), '2026-11').map((r) => r.item).sort();
 eq('removed item disappears, history stays', removed, ['Car service', 'Flexible', 'Rent']);
 eq('home carries pacing and comparison', [L.computeHome(Object.assign({}, base, { plan: planRows, txns: planTx })).pacing.amount, L.computeHome(base).pacing], [3000000, null]);
+
+// ---------- Business or family tag, plan as the only budget ----------
+const ptAccT = { 'PT Bank': true };
+eq('tag wins over account', [L.isBusiness_({ entity: 'Business', account: 'Card A' }, ptAccT), L.isBusiness_({ entity: 'Family', account: 'PT Bank' }, ptAccT), L.isBusiness_({ account: 'PT Bank' }, ptAccT), L.isBusiness_({ account: 'Card A' }, ptAccT)], [true, false, true, false]);
+const entT = (o) => Object.assign({ txn_type: 'purchase', status: 'confirmed', account: 'Card A', category: 'Fuel', idr_amount: 100000, timestamp: '2026-11-09T10:00:00+07:00' }, o);
+const acc2T = [{ account: 'Card A', entity: 'Household' }, { account: 'PT Bank', entity: 'PT' }];
+const stEnt = L.spendTotals_([entT({ id: 'a' }), entT({ id: 'b', entity: 'Business' }), entT({ id: 'c', account: 'PT Bank' }), entT({ id: 'd', account: 'PT Bank', entity: 'Family' })], acc2T, '2026-11-09');
+eq('business-tagged and PT-account spending stays out of family spending', stEnt.today, 200000);
+const planRowsT = [{ month: '2026-11', item: 'Internet', kind: 'fixed', amount_idr: 500000, due_day: 25, category: 'Utilities & internet', active: 'Y' }, { month: '2026-11', item: 'Flex', kind: 'flexible', amount_idr: 20000000, active: 'Y' }];
+eq('fixed plan items become bills', L.billsFromPlan_(planRowsT, [], acc2T, '2026-11-09').map((b) => b.bill + ':' + b.due_day + ':' + (b.last_paid ? 'paid' : 'open')), ['Internet:25:open']);
+const histT = [{ month: '2026-10', category: 'Eating out', spent_idr: 6000000 }, { month: '2026-10', category: 'Business', spent_idr: 50000000 }, { month: '2026-10', category: 'Debt payment', spent_idr: 9000000 }, { month: '2026-10', category: 'Held: Customer order', spent_idr: 18000000 }, { month: '2026-10', category: 'Utilities & internet', spent_idr: 2000000 }];
+eq('history core spending skips business, debt, held and planned items', L.historyCore_(histT, '2026-10', { 'Utilities & internet': true }), 6000000);
+eq('flexible suggestion falls back to imported history', L.computePlan_({ plan: planRowsT, txns: [], accounts: acc2T, today: '2026-11-09', history: histT }).suggestFlexible, 6000000);
+const homePlanT = L.computeHome(Object.assign({}, base, { plan: planRowsT, history: [], bills: [], buckets: [], today: '2026-11-19' }));
+eq('home safe-to-spend follows the plan Flexible number', [homePlanT.safeToSpend > 0, homePlanT.needs.indexOf('plan') === -1], [true, true]);
 
 failed += require('./glue.js');
 

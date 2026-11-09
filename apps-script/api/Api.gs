@@ -107,7 +107,7 @@ function data_(book, who) {
   txns = dropMatchedManual_(txns);
   return {
     book: book, accounts: accounts, txns: txns, buckets: rows_(book, 'Buckets'), balances: rows_(book, 'Balances'),
-    plan: planRows_(book), bills: rows_(book, 'Bills'), debts: rows_(book, 'Debts'), summary: rows_(book, 'Summary'),
+    plan: planRows_(book), history: historyRows_(book), debts: rows_(book, 'Debts'), summary: rows_(book, 'Summary'),
     today: Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM-dd')
   };
 }
@@ -115,6 +115,8 @@ function data_(book, who) {
 var PLAN_HEADERS = ['month', 'item', 'kind', 'amount_idr', 'due_day', 'target_idr', 'every_months', 'category', 'active', 'set_by'];
 
 /** The Plan tab is created the first time a plan is saved. Until then there is simply no plan. */
+/** Imported YNAB history (month x category totals). Optional: used only to suggest the Flexible number. */
+function historyRows_(book) { return book.getSheetByName('YNAB_Monthly') ? rows_(book, 'YNAB_Monthly') : []; }
 function planRows_(book) { return book.getSheetByName('Plan') ? rows_(book, 'Plan') : []; }
 
 function ensurePlan_(book) {
@@ -173,7 +175,7 @@ function slim_(t, settled) {
     id: t.id, date: String(t.date).slice(0, 10), timestamp: t.timestamp, type: t.txn_type, amount: t.idr_amount === '' ? null : Number(t.idr_amount),
     account: t.account, payee: t.payee, category: t.category, bucket: t.bucket, status: t.status, memo: t.memo, source: t.source,
     payNow: f.indexOf('pay_now') !== -1, paid: !!(settled && settled[t.id]), links: t.links_to_id || '', who: t.who || '',
-    cleared: t.source === 'email', receipt: !!t.receipt_drive_id, lat: has_(t.lat) && t.lat !== '' ? Number(t.lat) : null, lng: has_(t.lng) && t.lng !== '' ? Number(t.lng) : null
+    cleared: t.source === 'email', receipt: !!t.receipt_drive_id, entity: t.entity || '', ptFile: String(t.pt_file).toUpperCase() === 'Y', lat: has_(t.lat) && t.lat !== '' ? Number(t.lat) : null, lng: has_(t.lng) && t.lng !== '' ? Number(t.lng) : null
   };
 }
 
@@ -214,6 +216,7 @@ function handle_(req, who) {
   }
   if (a === 'status') return status_(book, who);
   if (a === 'payees') return { payees: payeeSummary_(data_(book, who).txns, rows_(book, 'Rules')), categories: categoryList_(book) };
+  if (a === 'pt_file_list') return ptFileList_(book, who, req);
   if (a === 'set_payee_category') return setPayeeCategory_(book, who, req);
   if (a === 'attach_photo') return attachPhoto_(book, who, req);
   if (a === 'add_held_type') return addHeldType_(book, who, req);
@@ -289,7 +292,7 @@ function addHeldType_(book, who, req) {
   return { category: full };
 }
 
-var EDITABLE = { category: 1, payee: 1, idr_amount: 1, memo: 1, account: 1 };
+var EDITABLE = { category: 1, payee: 1, idr_amount: 1, memo: 1, account: 1, entity: 1, pt_file: 1 };
 
 function findTxn_(book, id) {
   var sh = book.getSheetByName('Transactions');
@@ -315,6 +318,8 @@ function updateTxn_(book, who, req) {
   Object.keys(ch).forEach(function (k) {
     if (!EDITABLE[k]) throw userError_('That field cannot be changed.');
     var val = ch[k];
+    if (k === 'entity' && val !== 'Family' && val !== 'Business' && val !== '') throw userError_('Choose Family or Business.');
+    if (k === 'pt_file' && val !== 'Y' && val !== '') throw userError_('File for PT AHU can only be on or off.');
     if (k === 'idr_amount') { val = Number(val); if (isNaN(val) || val <= 0) throw userError_('Type the amount as a number above zero.'); }
     setField_(book, who, f, k, val);
     if (k === 'category') setField_(book, who, f, 'bucket', bucketForCategory(rows_(book, 'Categories'), val));
@@ -381,7 +386,7 @@ function addTxn_(book, who, req) {
   append_(book, 'Transactions', [{
     id: id, date: req.date || now.slice(0, 10), timestamp: now, txn_type: held ? 'held_in' : (income ? 'income' : 'purchase'), idr_amount: amt, orig_currency: 'IDR',
     account: req.account || '', payee: req.payee, category: cat, bucket: (income || held) ? '' : bucketForCategory(rows_(book, 'Categories'), cat),
-    who: NAMES[who], source: 'manual', settled: 'Y', status: 'confirmed', memo: req.memo || '', created_at: now, updated_at: now,
+    who: NAMES[who], source: 'manual', settled: 'Y', status: 'confirmed', memo: req.memo || '', entity: (req.entity === 'Family' || req.entity === 'Business') ? req.entity : '', pt_file: req.pt_file ? 'Y' : '', created_at: now, updated_at: now,
     lat: has_(req.lat) && req.lat !== '' && req.lat !== null ? Number(req.lat) : '', lng: has_(req.lng) && req.lng !== '' && req.lng !== null ? Number(req.lng) : ''
   }]);
   audit_(book, NAMES[who], 'add', 'Transactions', id, '', '', amt);
@@ -438,6 +443,8 @@ function reconcile_(book, who) {
     if (mv('memo')) setField_(book, who, e, 'memo', mv('memo'));
     if (mv('lat') !== '') { setField_(book, who, e, 'lat', mv('lat')); setField_(book, who, e, 'lng', mv('lng')); }
     if (mv('receipt_drive_id')) setField_(book, who, e, 'receipt_drive_id', mv('receipt_drive_id'));
+    if (mv('entity')) setField_(book, who, e, 'entity', mv('entity'));
+    if (mv('pt_file')) setField_(book, who, e, 'pt_file', mv('pt_file'));
     setField_(book, who, e, 'status', 'confirmed');
     addFlag_(book, who, e, 'matched');
     touch_(e);
@@ -500,6 +507,18 @@ function setPayeeCategory_(book, who, req) {
   append_(book, 'Rules', [{ rule_id: 'r_' + Utilities.getUuid().replace(/-/g, '').slice(0, 8), match_type: 'contains', match_text: key, category: req.category, bucket: bucket, auto_confirm: 'Y', times_used: 0 }]);
   audit_(book, NAMES[who], 'set_payee_category', 'Rules', key, 'category', '', req.category);
   return { saved: true };
+}
+
+/** Everything filed for PT AHU in a month (default: this month), with receipt links, for the accountant. */
+function ptFileList_(book, who, req) {
+  var month = /^\d{4}-\d{2}$/.test(String(req.month || '')) ? req.month : Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM');
+  var items = rows_(book, 'Transactions').filter(function (t) {
+    return String(t.pt_file).toUpperCase() === 'Y' && t.status !== 'void' && String(t.date || t.timestamp).slice(0, 7) === month;
+  }).sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); }).map(function (t) {
+    return { id: t.id, date: String(t.date).slice(0, 10), payee: t.payee, category: t.category, amount: num_(t.idr_amount), account: t.account, entity: t.entity || '',
+      receipt: t.receipt_drive_id ? 'https://drive.google.com/file/d/' + t.receipt_drive_id + '/view' : '' };
+  });
+  return { month: month, items: items, total: items.reduce(function (a, i) { return a + i.amount; }, 0), missingReceipts: items.filter(function (i) { return !i.receipt; }).length };
 }
 
 /** Saves a receipt photo to the PT_Receipts folder in Drive and links it to the transaction. */
