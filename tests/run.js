@@ -201,7 +201,7 @@ eq('month stored as a date still matches', L.computeHome(Object.assign({}, base,
 const lowCash = L.computeHome(Object.assign({}, base, { balances: [{ account: 'Bank A', date_confirmed: '2026-11-19', confirmed_balance: 400000 }] }));
 eq('cash below bills gives zero and says so', [lowCash.safeToSpend, /below/.test(lowCash.notes[0])], [0, true]);
 const noData = L.computeHome(Object.assign({}, base, { balances: [], buckets: [] }));
-eq('no balances: no invented number', [noData.safeToSpend, noData.needs], [null, ['balances', 'caps']]);
+eq('no balances: no invented number', [noData.safeToSpend, noData.needs], [null, ['balances', 'plan']]);
 
 
 // held for others: never ours, comes off cash, tracked per type
@@ -336,6 +336,21 @@ eq('flexible over the line is flagged', over.flexible.status, 'over');
 const removed = L.planLatest_(planRows.concat([{ month: '2026-11', item: 'School fees', kind: 'fixed', active: 'N' }]), '2026-11').map((r) => r.item).sort();
 eq('removed item disappears, history stays', removed, ['Car service', 'Flexible', 'Rent']);
 eq('home carries pacing and comparison', [L.computeHome(Object.assign({}, base, { plan: planRows, txns: planTx })).pacing.amount, L.computeHome(base).pacing], [3000000, null]);
+
+// ---------- Business or family tag, plan as the only budget ----------
+const ptAccT = { 'PT Bank': true };
+eq('tag wins over account', [L.isBusiness_({ entity: 'Business', account: 'Card A' }, ptAccT), L.isBusiness_({ entity: 'Family', account: 'PT Bank' }, ptAccT), L.isBusiness_({ account: 'PT Bank' }, ptAccT), L.isBusiness_({ account: 'Card A' }, ptAccT)], [true, false, true, false]);
+const entT = (o) => Object.assign({ txn_type: 'purchase', status: 'confirmed', account: 'Card A', category: 'Fuel', idr_amount: 100000, timestamp: '2026-11-09T10:00:00+07:00' }, o);
+const acc2T = [{ account: 'Card A', entity: 'Household' }, { account: 'PT Bank', entity: 'PT' }];
+const stEnt = L.spendTotals_([entT({ id: 'a' }), entT({ id: 'b', entity: 'Business' }), entT({ id: 'c', account: 'PT Bank' }), entT({ id: 'd', account: 'PT Bank', entity: 'Family' })], acc2T, '2026-11-09');
+eq('business-tagged and PT-account spending stays out of family spending', stEnt.today, 200000);
+const planRowsT = [{ month: '2026-11', item: 'Internet', kind: 'fixed', amount_idr: 500000, due_day: 25, category: 'Utilities & internet', active: 'Y' }, { month: '2026-11', item: 'Flex', kind: 'flexible', amount_idr: 20000000, active: 'Y' }];
+eq('fixed plan items become bills', L.billsFromPlan_(planRowsT, [], acc2T, '2026-11-09').map((b) => b.bill + ':' + b.due_day + ':' + (b.last_paid ? 'paid' : 'open')), ['Internet:25:open']);
+const histT = [{ month: '2026-10', category: 'Eating out', spent_idr: 6000000 }, { month: '2026-10', category: 'Business', spent_idr: 50000000 }, { month: '2026-10', category: 'Debt payment', spent_idr: 9000000 }, { month: '2026-10', category: 'Held: Customer order', spent_idr: 18000000 }, { month: '2026-10', category: 'Utilities & internet', spent_idr: 2000000 }];
+eq('history core spending skips business, debt, held and planned items', L.historyCore_(histT, '2026-10', { 'Utilities & internet': true }), 6000000);
+eq('flexible suggestion falls back to imported history', L.computePlan_({ plan: planRowsT, txns: [], accounts: acc2T, today: '2026-11-09', history: histT }).suggestFlexible, 6000000);
+const homePlanT = L.computeHome(Object.assign({}, base, { plan: planRowsT, history: [], bills: [], buckets: [], today: '2026-11-19' }));
+eq('home safe-to-spend follows the plan Flexible number', [homePlanT.safeToSpend > 0, homePlanT.needs.indexOf('plan') === -1], [true, true]);
 
 failed += require('./glue.js');
 

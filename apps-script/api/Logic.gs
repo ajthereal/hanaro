@@ -32,6 +32,20 @@ function nextDue_(today, dueDay) {
 function hasRuleFlag_(f) { return f.some(function (x) { return x.indexOf('rule:') === 0; }); }
 function liveTxn_(t) { return t.status !== 'void'; }
 
+/** { account: true } for business (PT) accounts. */
+function ptAccounts_(accounts) {
+  var pt = {}; (accounts || []).forEach(function (a) { if (a.entity === 'PT') pt[a.account] = true; });
+  return pt;
+}
+
+/** Business or family? The tag on the entry wins; without one, a PT account means business. Anything else is family. */
+function isBusiness_(t, pt) {
+  var e = String(t.entity || '').toLowerCase();
+  if (e === 'business') return true;
+  if (e === 'family') return false;
+  return !!(pt && pt[t.account]);
+}
+
 /** Purchases that still count as money out: not void, not unread, not duplicate. */
 function countsAsSpend_(t) {
   return t.txn_type === 'purchase' && (t.status === 'auto' || t.status === 'confirmed');
@@ -152,10 +166,10 @@ function weekStart_(iso) {
  * Business (PT) accounts, transfers, card payments and money held for others are not included.
  */
 function spendTotals_(txns, accounts, today) {
-  var pt = {}; accounts.forEach(function (a) { if (a.entity === 'PT') pt[a.account] = true; });
+  var pt = ptAccounts_(accounts);
   var wk = weekStart_(today), mo = today.slice(0, 7), r = { today: 0, week: 0, month: 0, todayCount: 0 };
   txns.forEach(function (t) {
-    if (!countsAsSpend_(t) || pt[t.account]) return;
+    if (!countsAsSpend_(t) || isBusiness_(t, pt)) return;
     var d = day_(t.timestamp || t.date), n = num_(t.idr_amount);
     if (d.slice(0, 7) === mo) r.month += n;
     if (d >= wk && d <= today) r.week += n;
@@ -258,7 +272,8 @@ function computeHome(d) {
     cash += num_(b.confirmed_balance); counted++;
     if (!oldest || String(b.date_confirmed) < oldest) oldest = String(b.date_confirmed);
   });
-  var ob = obligationsUntil_(today, horizon, d.bills || [], d.debts || []);
+  var bills = (d.plan && d.plan.length) ? billsFromPlan_(d.plan, d.txns, d.accounts, today) : (d.bills || []);
+  var ob = obligationsUntil_(today, horizon, bills, d.debts || []);
   var obTotal = ob.reduce(function (a, o) { return a + o.amount; }, 0);
 
   // Money held for other people (customer orders, convention tickets...). Never ours: it comes off cash before anything else.
@@ -272,16 +287,18 @@ function computeHome(d) {
   var heldByType = Object.keys(heldBy).map(function (k) { return { type: k, amount: heldBy[k] }; })
     .filter(function (x) { return x.amount !== 0; }).sort(function (a, b) { return b.amount - a.amount; });
 
+  var planNow = computePlan_({ plan: d.plan || [], txns: d.txns, accounts: d.accounts, today: today, history: d.history });
+  var hasFlex = !!planNow.flexible;
   var notes = [], safe = null, needs = [];
   if (!counted) needs.push('balances');
-  if (!capped.length) needs.push('caps');
+  if (!hasFlex && !capped.length) needs.push('plan');
   if (counted) {
     var cashSide = cash - obTotal - Math.max(heldTotal, 0);
-    var basis = capped.length ? Math.min(bucketsLeft, cashSide) : cashSide;
+    var basis = hasFlex ? Math.min(Math.max(planNow.flexible.left, 0), cashSide) : (capped.length ? Math.min(bucketsLeft, cashSide) : cashSide);
     safe = Math.max(0, Math.floor(basis / days / 1000) * 1000);
     if (cashSide < 0) notes.push('Cash is below the bills and minimums due before ' + monthName_(horizon) + '.');
     else notes.push('Bills and minimums are covered until ' + monthName_(horizon) + '. Money that has not landed never counts.');
-    if (!capped.length) notes.push('Set bucket caps to include them in this number.');
+    if (!hasFlex && !capped.length) notes.push('Set your Flexible number in Spending to include it in this number.');
     if (heldTotal > 0) notes.push(rpText_(heldTotal) + ' in your accounts belongs to other people and is not counted.');
     var age = daysBetween_(day_(oldest), today);
     if (age >= 3) notes.push('Balances were last confirmed ' + age + ' days ago. Update them for an accurate number.');
@@ -299,14 +316,13 @@ function computeHome(d) {
 
   var hot = buckets.filter(function (b) { return b.pct !== null && b.pct >= 80; }).sort(function (a, b) { return b.pct - a.pct; })[0];
   var insight = hot ? hot.bucket + ' is at ' + hot.pct + '%. Staying under it keeps the daily number steady through ' + monthName_(horizon) + '.'
-    : (capped.length ? 'Every bucket is under 80%. Nice and steady.' : 'Add bucket caps in Status to see how each area is doing.');
+    : (capped.length ? 'Every bucket is under 80%. Nice and steady.' : 'Set your plan in Spending to see how the month is going.');
 
-  var planNow = computePlan_({ plan: d.plan || [], txns: d.txns, accounts: d.accounts, today: today });
   var items = reviewItems(d.txns);
   var spend = spendTotals_(d.txns, d.accounts, today);
   var settledNow = settledPayNow(d.txns);
   var owed = d.txns.filter(function (t) { return liveTxn_(t) && flagsOf_(t).indexOf('pay_now') !== -1 && !settledNow[t.id]; });
-  var billsWeek = obligationsUntil_(today, addDays_(today, 8), d.bills || [], d.debts || []);
+  var billsWeek = obligationsUntil_(today, addDays_(today, 8), bills, d.debts || []);
   return {
     spentToday: spend.today, spentTodayCount: spend.todayCount, spentWeek: spend.week, spentMonth: spend.month, avgPerDay: spend.avgPerDay,
     toPayTotal: owed.reduce(function (a, t) { return a + num_(t.idr_amount); }, 0), toPayCount: owed.length,
@@ -334,10 +350,10 @@ function prevMonth_(ym) {
   return y + '-' + (m < 10 ? '0' : '') + m;
 }
 
-/** Family purchases only: not void, unread or duplicate, and never from a business (PT) account. */
+/** Family purchases only: not void, unread or duplicate, and never tagged Business (or from a PT account with no tag). */
 function familySpend_(txns, accounts) {
-  var pt = {}; (accounts || []).forEach(function (a) { if (a.entity === 'PT') pt[a.account] = true; });
-  return (txns || []).filter(function (t) { return countsAsSpend_(t) && !pt[t.account]; })
+  var pt = ptAccounts_(accounts);
+  return (txns || []).filter(function (t) { return countsAsSpend_(t) && !isBusiness_(t, pt); })
     .map(function (t) { return { day: day_(t.timestamp || t.date), cat: t.category || '', n: num_(t.idr_amount) }; });
 }
 
@@ -371,6 +387,26 @@ function monthCompare_(txns, accounts, today) {
   var thisSeries = cumulative_(spend, ym, day), lastSeries = cumulative_(spend, pm, lastDays);
   var lastSame = lastSeries[Math.min(day, lastDays) - 1] || 0, thisSame = thisSeries[day - 1] || 0;
   return { thisSpent: thisSame, lastSpent: lastSame, diff: lastSame - thisSame, thisSeries: thisSeries, lastSeries: lastSeries, hasLast: lastSeries[lastDays - 1] > 0 };
+}
+
+/** Everyday family spending for a month from the imported YNAB history (YNAB_Monthly rows), outside the planned categories. */
+var NOT_EVERYDAY_ = { 'Business': 1, 'Debt payment': 1, 'Fees & interest': 1, 'Own transfer': 1, 'Income': 1, 'Other': 1 };
+function historyCore_(history, ym, planned) {
+  var t = 0;
+  (history || []).forEach(function (r) {
+    if (String(r.month).slice(0, 7) !== ym) return;
+    var c = String(r.category || '');
+    if (NOT_EVERYDAY_[c] || c.indexOf('Held:') === 0 || (planned && planned[c])) return;
+    t += num_(r.spent_idr);
+  });
+  return t;
+}
+
+/** Fixed plan items as bills, so the plan is the only list of bills. A bill counts as paid once its category has the money out this month. */
+function billsFromPlan_(plan, txns, accounts, today) {
+  var p = computePlan_({ plan: plan || [], txns: txns, accounts: accounts, today: today }), ym = today.slice(0, 7);
+  return p.fixed.filter(function (f) { return f.dueDay !== null && f.amount > 0; })
+    .map(function (f) { return { bill: f.item, amount_idr: f.amount, due_day: f.dueDay, active: 'Y', last_paid: f.status === 'paid' ? ym + '-01' : '' }; });
 }
 
 /**
@@ -411,10 +447,12 @@ function computePlan_(d) {
     flexible = { amount: amount, spent: flexSpent, left: left, daysLeft: daysLeft, perDay: Math.max(0, Math.floor(left / daysLeft / 1000) * 1000),
       expected: expected, under: expected - flexSpent, dayFrac: day / dim, day: day, daysInMonth: dim, status: status2 };
   }
-  // Suggestion for the flexible number: the average of the last 3 months, outside the planned categories.
+  // Suggestion for the flexible number: the average of the last 3 months outside the planned categories.
+  // A month with no live data uses the imported YNAB history, so the first weeks do not suggest a tiny number.
   var suggest = null, ms = [], m1 = prevMonth_(ym), m2 = prevMonth_(m1), m3 = prevMonth_(m2);
   [m1, m2, m3].forEach(function (m) {
     var t = 0; spend.forEach(function (x) { if (x.day.slice(0, 7) === m && !planned[x.cat]) t += x.n; });
+    if (t <= 0) t = historyCore_(d.history, m, planned);
     if (t > 0) ms.push(t);
   });
   if (ms.length) suggest = Math.round(ms.reduce(function (a, b) { return a + b; }, 0) / ms.length / 100000) * 100000;
@@ -436,5 +474,5 @@ function ruleKey(payee) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { computePlan_: computePlan_, monthCompare_: monthCompare_, planLatest_: planLatest_, findMatches_: findMatches_, dropMatchedManual_: dropMatchedManual_, payeeSummary_: payeeSummary_, eveningText_: eveningText_, spendTotals_: spendTotals_, weekStart_: weekStart_, computeHome: computeHome, reviewItems: reviewItems, settledPayNow: settledPayNow, bucketForCategory: bucketForCategory, ruleKey: ruleKey, nextDue_: nextDue_, firstOfNextMonth_: firstOfNextMonth_ };
+  module.exports = { isBusiness_: isBusiness_, billsFromPlan_: billsFromPlan_, historyCore_: historyCore_, computePlan_: computePlan_, monthCompare_: monthCompare_, planLatest_: planLatest_, findMatches_: findMatches_, dropMatchedManual_: dropMatchedManual_, payeeSummary_: payeeSummary_, eveningText_: eveningText_, spendTotals_: spendTotals_, weekStart_: weekStart_, computeHome: computeHome, reviewItems: reviewItems, settledPayNow: settledPayNow, bucketForCategory: bucketForCategory, ruleKey: ruleKey, nextDue_: nextDue_, firstOfNextMonth_: firstOfNextMonth_ };
 }

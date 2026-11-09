@@ -74,6 +74,8 @@
     <div id="newTypeWrap" class="field" hidden><label for="addNewType">Name of the new kind</label><input id="addNewType" autocomplete="off" placeholder="For example, Seminar fees"></div>
     <p id="heldHint" class="note" hidden>Money someone gave you to pass on. It is not your income and not counted as spending.</p>
     <div class="field"><label for="addAcc" id="accLabel">Account</label><select id="addAcc"></select></div>
+    <div class="field" id="entityWrap"><span class="fl">This spending is</span><div class="seg" id="entitySeg"><button type="button" id="entFam" class="on">Family</button><button type="button" id="entBiz">Business</button></div></div>
+    <div class="field" id="ptWrap"><label class="chk" for="addPt"><input type="checkbox" id="addPt"> File for PT AHU</label><span class="note">Also counts as company spending. Your receipt photo goes to the PT_Receipts folder.</span></div>
     <div class="field"><label for="addMemo">Memo (optional)</label><input id="addMemo" autocomplete="off"></div>
     <div class="field"><span class="fl">Receipt photo (optional, saved to PT_Receipts)</span><button id="photoBtn" class="link" type="button">Take or choose a photo</button><input id="photoIn" type="file" accept="image/*" hidden><span id="photoMsg" class="note"></span></div>
   </div>
