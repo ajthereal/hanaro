@@ -347,6 +347,13 @@ eq('part paid shows what was paid and when', [fst('Electricity').spent, fst('Ele
 eq('no payee words uses the category when it is not shared', [fst('School').status, fst('KUR').status], ['paid', 'later']);
 const tapped = L.computePlan_({ plan: sharedPlan, txns: sharedTx, accounts: planAcc, today: '2026-11-09', paid: [{ month: '2026-11', item: 'KUR', amount_idr: 9126582, paid_date: '2026-11-08' }, { month: '2026-11', item: 'Electricity', amount_idr: 1000000, paid_date: '2026-11-08' }, { month: '2026-10', item: 'Water', amount_idr: 200000, paid_date: '2026-10-08' }] }).fixed;
 eq('a Paid tap counts, only for its own month', [tapped.find((f) => f.item === 'KUR').status, tapped.find((f) => f.item === 'Electricity').status, tapped.find((f) => f.item === 'Water').status], ['paid', 'paid', 'later']);
+// whose transaction: business wins, a typed entry is its typist's, a bank email is its account owner's
+const bctx = { pt: { 'Bank PT': true }, owners: { 'Card A': 'AJ', 'Jenius C': 'Cynthia', 'BCA Bersama': 'AJ + Cynthia' } };
+eq('badge: business tag wins over owner', L.byOf_({ account: 'Card A', entity: 'Business' }, bctx), 'Business');
+eq('badge: PT account is business', L.byOf_({ account: 'Bank PT' }, bctx), 'Business');
+eq('badge: bank email goes to the account owner', [L.byOf_({ account: 'Card A' }, bctx), L.byOf_({ account: 'Jenius C' }, bctx)], ['AJ', 'Cynthia']);
+eq('badge: typed entry goes to who typed it, shared account otherwise AJ', [L.byOf_({ account: 'BCA Bersama', who: 'Cynthia' }, bctx), L.byOf_({ account: 'BCA Bersama' }, bctx)], ['Cynthia', 'AJ']);
+eq('badge: family tag on a PT account is not business', L.byOf_({ account: 'Bank PT', entity: 'Family' }, bctx), '');
 const noPlan = L.computePlan_({ plan: [], txns: planTx, accounts: planAcc, today: '2026-11-20' });
 eq('no plan means no flexible card and a suggestion', [noPlan.flexible, noPlan.suggestFlexible], [null, 3500000]);
 const over = L.computePlan_({ plan: planRows, txns: planTx.concat([pt('p6', 900000, 'Fun', '2026-11-16T12:00:00+07:00')]), accounts: planAcc, today: '2026-11-20' });

@@ -173,10 +173,10 @@
   var LABELS = { home: 'HOME', review: 'REVIEW', activity: 'ACTIVITY', spending: 'SPENDING', status: 'STATUS' };
   function renderNav() {
     document.querySelectorAll('nav [data-go]').forEach(function (b) {
-      var v = b.getAttribute('data-go'), on = state.view === v || (v === 'status' && state.view === 'payees') || (v === 'spending' && state.view === 'activity');
+      var v = b.getAttribute('data-go'), on = state.view === v || (v === 'status' && state.view === 'payees') ;
       b.className = on ? 'on' : '';
       b.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[v] + '</svg>' +
-        '<span class="lb">' + (state.view === 'activity' && v === 'spending' ? 'ACTIVITY' : LABELS[v]) + '</span>' + (v === 'review' && state.counts.review ? '<span class="badge">' + state.counts.review + '</span>' : '');
+        '<span class="lb">' + LABELS[v] + '</span>' + (v === 'review' && state.counts.review ? '<span class="badge">' + state.counts.review + '</span>' : '');
     });
   }
   function setPill(iso, err) {
@@ -582,9 +582,12 @@
   function paintActivity(v, d) {
     (function () {
       var html = '<div style="' + TITLE + '">Activity</div>';
-      if (!d.items.length) html += '<div class="card empty">Nothing yet.</div>';
+      var FILTERS = ['All', 'AJ', 'Cynthia', 'Business'], fsel = state.actFilter || 'All';
+      html += '<div class="chips">' + FILTERS.map(function (f) { return '<button class="chip' + (f === fsel ? ' on' : '') + '" data-actf="' + f + '">' + f + '</button>'; }).join('') + '</div>';
+      var items = d.items.filter(function (t) { return fsel === 'All' || t.by === fsel; });
+      if (!items.length) html += '<div class="card empty">' + (d.items.length ? 'Nothing for ' + fsel + ' in the latest transactions.' : 'Nothing yet.') + '</div>';
       var last = '', open = false;
-      d.items.forEach(function (t) {
+      items.forEach(function (t) {
         if (t.date !== last) { if (open) html += '</div>'; html += '<div class="day">' + dayLabel(t.date).toUpperCase() + '</div><div class="card" style="padding:6px 18px">'; open = true; last = t.date; }
         var tag = '';
         if (t.status === 'needs_review') tag = '<span class="tag unread">UNREAD</span>';
@@ -596,10 +599,13 @@
         else if (t.type === 'income') tag = '<span class="tag paid">RECEIVED</span>';
         else if (t.type === 'held_in') tag = '<span class="tag new">HELD FOR OTHERS</span>';
         else if (t.type === 'held_out') tag = '<span class="tag new">PASSED ON</span>';
-        html += '<div class="act"><div class="l"><div class="p">' + esc(t.payee || '(no name)') + '</div><div class="sub">' + esc(t.category || (t.type === 'payment' ? 'Paid to your card' : t.type === 'transfer' ? 'Sent to someone' : 'No category yet')) + ' · ' + esc(t.account) + '</div>' + (tag ? '<div style="margin-top:4px">' + tag + '</div>' : '') + (t.type === 'purchase' && String(t.id).indexOf('local_') !== 0 ? '<button class="link rc" data-photo="' + esc(t.id) + '">' + (t.receipt ? 'Receipt saved ✓ · Replace' : 'Add receipt photo') + '</button>' : '') + tagBtns(t) + '</div><div class="r">' + (t.amount === null ? '–' : (t.type === 'income' || t.type === 'held_in' ? '+' : '') + rp(t.amount)) + (t.cleared ? '<span class="clr" title="Confirmed by the bank email">✓</span>' : '') + (t.origCurrency && t.origCurrency !== 'IDR' && t.origAmount !== null ? '<div class="sub">' + esc(t.origCurrency) + ' ' + Number(t.origAmount).toFixed(2) + (t.est ? ' · est.' : '') + '</div>' : '') + '</div></div>';
+        var byTag = t.by ? '<span class="tag by-' + t.by.toLowerCase() + '">' + esc(t.by.toUpperCase()) + '</span> ' : '';
+        var hhmm = String(t.timestamp || '').slice(11, 16);
+        html += '<div class="act"><div class="l"><div class="p">' + esc(t.payee || '(no name)') + '</div><div class="sub">' + (hhmm ? hhmm + ' · ' : '') + esc(t.category || (t.type === 'payment' ? 'Paid to your card' : t.type === 'transfer' ? 'Sent to someone' : 'No category yet')) + ' · ' + esc(t.account) + '</div>' + '<div style="margin-top:4px">' + byTag + tag + '</div>' + (t.type === 'purchase' && String(t.id).indexOf('local_') !== 0 ? '<button class="link rc" data-photo="' + esc(t.id) + '">' + (t.receipt ? 'Receipt saved ✓ · Replace' : 'Add receipt photo') + '</button>' : '') + tagBtns(t) + '</div><div class="r">' + (t.amount === null ? '–' : (t.type === 'income' || t.type === 'held_in' ? '+' : '') + rp(t.amount)) + (t.cleared ? '<span class="clr" title="Confirmed by the bank email">✓</span>' : '') + (t.origCurrency && t.origCurrency !== 'IDR' && t.origAmount !== null ? '<div class="sub">' + esc(t.origCurrency) + ' ' + Number(t.origAmount).toFixed(2) + (t.est ? ' · est.' : '') + '</div>' : '') + '</div></div>';
       });
       if (open) html += '</div>';
       v.innerHTML = html;
+      v.querySelectorAll('[data-actf]').forEach(function (b) { b.addEventListener('click', function () { state.actFilter = b.getAttribute('data-actf'); paintActivity(v, d); }); });
       v.querySelectorAll('[data-ent],[data-pt]').forEach(function (b) {
         b.addEventListener('click', function () {
           var isEnt = b.hasAttribute('data-ent'), id = b.getAttribute(isEnt ? 'data-ent' : 'data-pt'), to = b.getAttribute('data-to');
@@ -922,7 +928,7 @@
     }
     var now = localIso();
     patch('activity', function (d) {
-      d.items.unshift({ id: 'local_' + Date.now(), date: now.slice(0, 10), timestamp: now, type: kind === 'purchase' ? 'purchase' : kind === 'income' ? 'income' : 'held_in', amount: foreign ? (typedIdr || null) : amt, origCurrency: foreign ? cur : '', origAmount: foreign ? amt : null, est: foreign && !typedIdr, account: acct, payee: payee, category: kind === 'income' ? 'Income' : cat, bucket: '', status: 'confirmed', memo: memo, entity: entity === 'Business' ? 'Business' : '', ptFile: ptFile, source: 'manual', payNow: false, paid: false, links: '', who: '', cleared: false, receipt: !!photo, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null });
+      d.items.unshift({ id: 'local_' + Date.now(), date: now.slice(0, 10), timestamp: now, type: kind === 'purchase' ? 'purchase' : kind === 'income' ? 'income' : 'held_in', amount: foreign ? (typedIdr || null) : amt, origCurrency: foreign ? cur : '', origAmount: foreign ? amt : null, est: foreign && !typedIdr, account: acct, payee: payee, category: kind === 'income' ? 'Income' : cat, bucket: '', status: 'confirmed', memo: memo, entity: entity === 'Business' ? 'Business' : '', ptFile: ptFile, source: 'manual', payNow: false, paid: false, links: '', who: '', by: entity === 'Business' ? 'Business' : ($('whoName').textContent || ''), cleared: false, receipt: !!photo, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null });
     });
     if (kind === 'purchase' && (!foreign || typedIdr)) patch('home', function (h) {
       var n = foreign ? typedIdr : amt;

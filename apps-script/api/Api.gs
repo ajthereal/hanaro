@@ -196,12 +196,12 @@ function removePlan_(book, who, req) {
   return { saved: true };
 }
 
-function slim_(t, settled) {
+function slim_(t, settled, ctx) {
   var f = String(t.flags || '').split(',').filter(function (x) { return x; });
   return {
     id: t.id, date: String(t.date).slice(0, 10), timestamp: t.timestamp, type: t.txn_type, amount: t.idr_amount === '' ? null : Number(t.idr_amount),
     account: t.account, payee: t.payee, category: t.category, bucket: t.bucket, status: t.status, memo: t.memo, source: t.source,
-    payNow: f.indexOf('pay_now') !== -1, paid: !!(settled && settled[t.id]), links: t.links_to_id || '', who: t.who || '',
+    payNow: f.indexOf('pay_now') !== -1, paid: !!(settled && settled[t.id]), links: t.links_to_id || '', who: t.who || '', by: byOf_(t, ctx),
     cleared: t.source === 'email', receipt: !!t.receipt_drive_id, entity: t.entity || '', origAmount: has_(t.orig_amount) && t.orig_amount !== '' ? Number(t.orig_amount) : null, origCurrency: t.orig_currency || '', est: flagsOf_(t).indexOf('fx_est') !== -1, ptFile: String(t.pt_file).toUpperCase() === 'Y', lat: has_(t.lat) && t.lat !== '' ? Number(t.lat) : null, lng: has_(t.lng) && t.lng !== '' ? Number(t.lng) : null
   };
 }
@@ -232,10 +232,11 @@ function handle_(req, who) {
     return { items: items };
   }
   if (a === 'activity') {
-    var d3 = data_(book, who), s3 = settledPayNow(d3.txns);
+    var d3 = data_(book, who), s3 = settledPayNow(d3.txns), byCtx = { pt: ptAccounts_(d3.accounts), owners: {} };
+    d3.accounts.forEach(function (x) { byCtx.owners[x.account] = x.owner; if (x.last4 && x.type === 'bank') byCtx.owners['BCA ...' + x.last4] = x.owner; });
     var list = d3.txns.filter(function (t) { return t.status !== 'void'; })
-      .sort(function (x, y) { return Date.parse(y.timestamp) - Date.parse(x.timestamp); }).slice(0, 80)
-      .map(function (t) { return slim_(t, s3); });
+      .sort(function (x, y) { return Date.parse(y.timestamp) - Date.parse(x.timestamp); }).slice(0, 150)
+      .map(function (t) { return slim_(t, s3, byCtx); });
     return { items: list };
   }
   if (a === 'categories') {
@@ -470,6 +471,8 @@ function bootstrap_(book, who) {
   var d = data_(book, who), role = ROLES[who];
   var home = computeHome(d); home.user = { name: NAMES[who], role: role };
   var settled = settledPayNow(d.txns), byId = {};
+  var byCtx = { pt: ptAccounts_(d.accounts), owners: {} };
+  d.accounts.forEach(function (x) { byCtx.owners[x.account] = x.owner; if (x.last4 && x.type === 'bank') byCtx.owners['BCA ...' + x.last4] = x.owner; });
   d.txns.forEach(function (t) { byId[t.id] = t; });
   var review = reviewItems(d.txns).slice(0, 100).map(function (i) {
     var o = { kind: i.kind, txn: slim_(i.t, settled) };
@@ -477,8 +480,8 @@ function bootstrap_(book, who) {
     return o;
   });
   var activity = d.txns.filter(function (t) { return t.status !== 'void'; })
-    .sort(function (x, y) { return Date.parse(y.timestamp) - Date.parse(x.timestamp); }).slice(0, 80)
-    .map(function (t) { return slim_(t, settled); });
+    .sort(function (x, y) { return Date.parse(y.timestamp) - Date.parse(x.timestamp); }).slice(0, 150)
+    .map(function (t) { return slim_(t, settled, byCtx); });
   var cats = rows_(book, 'Categories').filter(function (c) { return String(c.active).toUpperCase() !== 'N'; })
     .map(function (c) { return { category: c.category, bucket: c.bucket, held: String(c.counts_in_bucket).toUpperCase() === 'HELD' }; });
   var accts = d.accounts.filter(function (x) { return x.active !== 'N' && x.entity !== 'PT' && (x.type === 'bank' || x.type === 'credit card'); }).map(function (x) { return x.account; });
