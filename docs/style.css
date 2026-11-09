@@ -165,3 +165,5 @@ nav button:not(.on) .lb{display:none}
   header{justify-content:flex-end;gap:18px}
   #banner{max-width:560px}
 }
+
+.tag.by-aj{background:var(--sky);color:var(--teal)}.tag.by-cynthia{background:#FFE6EF;color:#B02A5B}.tag.by-business{background:#EDE9FF;color:#4B3BA8}

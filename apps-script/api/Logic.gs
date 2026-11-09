@@ -46,6 +46,21 @@ function isBusiness_(t, pt) {
   return !!(pt && pt[t.account]);
 }
 
+/**
+ * Whose transaction: Business, AJ or Cynthia. A typed entry belongs to whoever typed it.
+ * A bank email belongs to the owner of the account it came from. Business wins over both.
+ * ctx = { pt: {account: true}, owners: {account: 'AJ' | 'Cynthia' | 'AJ + Cynthia' | ...} }.
+ */
+function byOf_(t, ctx) {
+  if (isBusiness_(t, ctx && ctx.pt)) return 'Business';
+  var who = String(t.who || '').trim();
+  if (who === 'AJ' || who === 'Cynthia') return who;
+  var o = String((ctx && ctx.owners && ctx.owners[t.account]) || '').trim();
+  if (o === 'AJ' || o === 'Cynthia') return o;
+  if (o.indexOf('+') !== -1) return 'AJ'; // a shared account: AJ unless Cynthia typed the entry
+  return '';
+}
+
 /** Purchases that still count as money out: not void, not unread, not duplicate. */
 function countsAsSpend_(t) {
   return t.txn_type === 'purchase' && (t.status === 'auto' || t.status === 'confirmed');
@@ -496,5 +511,5 @@ function ruleKey(payee) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { isBusiness_: isBusiness_, billsFromPlan_: billsFromPlan_, historyCore_: historyCore_, computePlan_: computePlan_, monthCompare_: monthCompare_, planLatest_: planLatest_, findMatches_: findMatches_, dropMatchedManual_: dropMatchedManual_, payeeSummary_: payeeSummary_, eveningText_: eveningText_, spendTotals_: spendTotals_, weekStart_: weekStart_, computeHome: computeHome, reviewItems: reviewItems, settledPayNow: settledPayNow, bucketForCategory: bucketForCategory, ruleKey: ruleKey, nextDue_: nextDue_, firstOfNextMonth_: firstOfNextMonth_ };
+  module.exports = { byOf_: byOf_, isBusiness_: isBusiness_, billsFromPlan_: billsFromPlan_, historyCore_: historyCore_, computePlan_: computePlan_, monthCompare_: monthCompare_, planLatest_: planLatest_, findMatches_: findMatches_, dropMatchedManual_: dropMatchedManual_, payeeSummary_: payeeSummary_, eveningText_: eveningText_, spendTotals_: spendTotals_, weekStart_: weekStart_, computeHome: computeHome, reviewItems: reviewItems, settledPayNow: settledPayNow, bucketForCategory: bucketForCategory, ruleKey: ruleKey, nextDue_: nextDue_, firstOfNextMonth_: firstOfNextMonth_ };
 }
