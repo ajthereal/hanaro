@@ -191,13 +191,18 @@ function findMatches_(txns) {
     .sort(function (a, b) { return Date.parse(a.timestamp) - Date.parse(b.timestamp); });
   var em = txns.filter(function (t) { return t.source === 'email' && t.status === 'auto' && t.txn_type === 'purchase' && flagsOf_(t).indexOf('matched') === -1; });
   man.forEach(function (m) {
-    var mm = Date.parse(m.timestamp), best = null, bestGap = Infinity;
+    var mm = Date.parse(m.timestamp), best = null, bestScore = Infinity;
+    // A purchase typed in a foreign currency carries an estimated rupiah amount. The bank's real amount can differ a little (rate, card fee).
+    var foreign = !!m.orig_currency && m.orig_currency !== 'IDR' && flagsOf_(m).indexOf('fx_est') !== -1;
     em.forEach(function (e) {
-      if (used[e.id] || num_(e.idr_amount) !== num_(m.idr_amount)) return;
+      if (used[e.id]) return;
+      var rel = num_(m.idr_amount) > 0 ? Math.abs(num_(e.idr_amount) - num_(m.idr_amount)) / num_(m.idr_amount) : 1;
+      if (num_(e.idr_amount) !== num_(m.idr_amount) && !(foreign && rel <= 0.12)) return;
       if (m.account && e.account && m.account !== e.account) return;
       var diff = Date.parse(e.timestamp) - mm;
       if (diff < -12 * 3600000 || diff > 3 * 3600000) return;
-      if (Math.abs(diff) < bestGap) { best = e; bestGap = Math.abs(diff); }
+      var score = foreign ? rel : Math.abs(diff);
+      if (score < bestScore) { best = e; bestScore = score; }
     });
     if (best) { used[best.id] = true; pairs.push({ manual: m, email: best }); }
   });

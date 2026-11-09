@@ -141,3 +141,4 @@ button.addrow{border:0;background:none;color:var(--teal);font-weight:600;font-si
 
 .chk{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:600;color:var(--text)}.chk input{appearance:auto;-webkit-appearance:checkbox;width:24px;height:24px;min-height:0;padding:0;flex:none;margin:0;accent-color:var(--teal)}
 .ptrow{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--line)}.ptrow .s{font-size:12px;color:var(--muted)}
+.curchip{width:auto;flex:none;border:0;background:var(--line);color:var(--teal);font-weight:700;font-size:16px;border-radius:16px;padding:6px 12px;min-height:36px;appearance:auto;-webkit-appearance:menulist}

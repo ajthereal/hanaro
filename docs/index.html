@@ -59,7 +59,7 @@
   <div class="addtop">
     <button id="addCancel" class="roundx" aria-label="Close"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     <label for="addAmount" class="sr">Amount in rupiah</label>
-    <div class="amtwrap"><span class="amtrp">Rp</span><input id="addAmount" inputmode="numeric" autocomplete="off" placeholder="0"></div>
+    <div class="amtwrap"><select id="addCur" class="curchip" aria-label="Currency"><option value="IDR">Rp</option><option>SGD</option><option>MYR</option><option>USD</option><option>JPY</option><option>EUR</option><option>AUD</option><option>THB</option></select><input id="addAmount" inputmode="numeric" autocomplete="off" placeholder="0"></div>
     <div class="seg" role="tablist">
       <button id="kindSpent" class="on" role="tab">Spent</button>
       <button id="kindGot" role="tab">Received</button>
@@ -74,6 +74,7 @@
     <div id="newTypeWrap" class="field" hidden><label for="addNewType">Name of the new kind</label><input id="addNewType" autocomplete="off" placeholder="For example, Seminar fees"></div>
     <p id="heldHint" class="note" hidden>Money someone gave you to pass on. It is not your income and not counted as spending.</p>
     <div class="field"><label for="addAcc" id="accLabel">Account</label><select id="addAcc"></select></div>
+    <div class="field" id="fxWrap" hidden><label for="addIdr">Rupiah charged (optional)</label><input id="addIdr" inputmode="numeric" autocomplete="off" placeholder="Leave empty to use the current rate"><span class="note">The real amount from the bank email replaces the estimate later.</span></div>
     <div class="field" id="entityWrap"><span class="fl">This spending is</span><div class="seg" id="entitySeg"><button type="button" id="entFam" class="on">Family</button><button type="button" id="entBiz">Business</button></div></div>
     <div class="field" id="ptWrap"><label class="chk" for="addPt"><input type="checkbox" id="addPt"> File for PT AHU</label><span class="note">Also counts as company spending. Your receipt photo goes to the PT_Receipts folder.</span></div>
     <div class="field"><label for="addMemo">Memo (optional)</label><input id="addMemo" autocomplete="off"></div>
