@@ -475,13 +475,45 @@
   function payeeKey(p) { return String(p || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40); }
   function groupCard(k, list) {
     var total = list.reduce(function (a, i) { return a + (i.txn.amount || 0); }, 0);
-    return '<div class="card"><span class="tag new">SAME PLACE</span><div class="item-top"><div class="p">' + esc(list[0].txn.payee) + ' · ' + list.length + ' times</div><div class="a">' + rp(total) + '</div></div>' +
-      '<div class="sub">Pick one category for all of them. Hanaro remembers it for next time.</div>' +
+    var same = list.every(function (i) { return i.txn.amount === list[0].txn.amount; });
+    var rowsHtml = list.map(function (i) {
+      return '<div class="mrow"><span class="mt">' + esc(when(i.txn.timestamp)) + '<span class="ma">' + esc(i.txn.account) + '</span></span><span class="mv">' + rp(i.txn.amount || 0) + '</span><span class="mk" aria-hidden="true">✓</span></div>';
+    }).join('');
+    return '<div class="card" data-group="' + esc(k) + '"><span class="tag new">SAME PLACE</span><div class="item-top"><div class="p">' + esc(list[0].txn.payee) + ' · ' + list.length + ' times</div><div class="a">' + rp(total) + '</div></div>' +
+      '<div class="sub">' + (same ? 'Same amount each time.' : 'Different amounts.') + ' Check them, then pick one category for all. Hanaro remembers it for next time.</div>' +
+      '<div class="mlist">' + rowsHtml + '</div>' +
       catBtn('', ' data-group-cat') + '<p class="err" data-err></p>' +
       '<div class="btnrow"><button class="primary small" data-group-go="' + esc(k) + '">Confirm all ' + list.length + '</button></div></div>';
   }
+  /**
+   * Makes a confirm feel real: the button turns into a green "Confirmed", the card flashes green,
+   * then it slides out and the gap closes. Resolves when the last card is gone.
+   */
+  function playDone(cards) {
+    var calm = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    return new Promise(function (resolve) {
+      if (!cards.length) return resolve();
+      var lastEnd = 0;
+      cards.forEach(function (c, n) {
+        var t0 = calm ? 0 : n * 80;
+        setTimeout(function () {
+          var b = c.querySelector('.btnrow .primary');
+          if (b) { b.textContent = '✓ Confirmed'; b.classList.add('okbtn'); b.disabled = true; }
+          c.classList.add('done');
+          c.querySelectorAll('.mrow').forEach(function (r, j) { setTimeout(function () { r.classList.add('ok'); }, calm ? 0 : j * 110); });
+        }, t0);
+        setTimeout(function () {
+          c.style.maxHeight = c.offsetHeight + 'px';
+          void c.offsetHeight;
+          c.classList.add('leaving'); c.style.maxHeight = '0px';
+        }, t0 + (calm ? 200 : 900));
+        lastEnd = Math.max(lastEnd, t0 + (calm ? 200 : 900) + (calm ? 50 : 480));
+      });
+      setTimeout(resolve, lastEnd);
+    });
+  }
   /** Removes items from the saved copy at once and queues one change per item. */
-  function applyMany(items, makeCall, label) {
+  function applyMany(items, makeCall, label, hold) {
     var ids = {}; items.forEach(function (i) { ids[i.txn.id] = i; });
     var paidAmt = 0, paidN = 0;
     if (label === 'paid') items.forEach(function (i) { paidN++; paidAmt += i.txn.amount || 0; });
@@ -492,26 +524,32 @@
     });
     items.forEach(function (i) { var c = makeCall(i); queue.push({ action: c.action, args: c.args, label: rp(i.txn.amount || 0) + ' ' + (i.txn.payee || '') }); });
     saveQueue(); banner('Saved ' + items.length);
-    return flush().then(function (ok) { if (ok && !queue.length) render(); });
+    return flush().then(function (ok) { return (hold || Promise.resolve()).then(function () { if (ok && !queue.length) render(); }); });
   }
   function bulkAction(btn, v, shown) {
     var kind = btn.getAttribute('data-bulk');
     if (kind === 'paid') {
       var list = shown.filter(function (i) { return i.kind === 'pay_now'; });
       if (!confirm('Mark ' + list.length + ' card charges as paid? Only do this if you already paid them.')) return;
-      applyMany(list, function (i) { return { action: 'mark_paid', args: { id: i.txn.id } }; }, 'paid');
+      var hold1 = playDone([btn.closest('.card')]);
+      applyMany(list, function (i) { return { action: 'mark_paid', args: { id: i.txn.id } }; }, 'paid', hold1);
+      hold1.then(function () { repaintReview(v); });
     } else {
       var ready = shown.filter(function (i) { return i.kind === 'confirm' && i.txn.category; });
-      applyMany(ready, function (i) { return { action: 'update_txn', args: { id: i.txn.id, changes: { category: i.txn.category }, confirm: true } }; }, 'ready');
+      var ids = {}; ready.forEach(function (i) { ids[i.txn.id] = true; });
+      var cards = [btn.closest('.card')].concat([].slice.call(v.querySelectorAll('.card[data-id]')).filter(function (c) { return ids[c.getAttribute('data-id')]; }));
+      var hold2 = playDone(cards);
+      applyMany(ready, function (i) { return { action: 'update_txn', args: { id: i.txn.id, changes: { category: i.txn.category }, confirm: true } }; }, 'ready', hold2);
+      hold2.then(function () { repaintReview(v); });
     }
-    repaintReview(v);
   }
   function groupAction(btn, v, groups) {
     var card = btn.closest('.card'), cat = card.querySelector('[data-group-cat]').getAttribute('data-val'), err = card.querySelector('[data-err]');
     if (!cat) { err.textContent = 'Choose a category first.'; return; }
     var list = groups[btn.getAttribute('data-group-go')];
-    applyMany(list, function (i) { return { action: 'update_txn', args: { id: i.txn.id, changes: { category: cat }, confirm: true } }; }, 'group');
-    repaintReview(v);
+    var hold = playDone([card]);
+    applyMany(list, function (i) { return { action: 'update_txn', args: { id: i.txn.id, changes: { category: cat }, confirm: true } }; }, 'group', hold);
+    hold.then(function () { repaintReview(v); });
   }
   function reviewCard(i) {
     var t = i.txn, k = KIND[i.kind], id = esc(t.id);
@@ -567,8 +605,10 @@
       h.reviewCount = Math.max(0, h.reviewCount - 1);
       if (act === 'paid' && gone && gone.txn.amount) { h.toPayCount = Math.max(0, h.toPayCount - 1); h.toPayTotal = Math.max(0, h.toPayTotal - gone.txn.amount); }
     });
-    banner('Saved'); repaintReview(v);
-    send(action, args, label).then(function (ok) { if (ok && !queue.length) render(); });
+    banner('Saved');
+    var hold = playDone([card]);
+    hold.then(function () { repaintReview(v); });
+    send(action, args, label).then(function (ok) { return hold.then(function () { if (ok && !queue.length) render(); }); });
   }
 
   /* ---------- Activity ---------- */
