@@ -99,11 +99,13 @@
     <div class="field" id="pfDue"><label for="planDue">Due day of the month (optional)</label><input id="planDue" inputmode="numeric" autocomplete="off" placeholder="For example, 1"></div>
     <div class="field" id="pfTarget"><label for="planTarget">Target amount (Rp)</label><input id="planTarget" inputmode="numeric" autocomplete="off" placeholder="0"></div>
     <div class="field" id="pfEvery"><label for="planEvery">Covers how many months</label><input id="planEvery" inputmode="numeric" autocomplete="off" placeholder="For example, 12"></div>
+    <div class="field" id="pfMatch"><label for="planMatch">Payee words that mean it was paid (optional)</label><input id="planMatch" autocomplete="off" autocapitalize="none" placeholder="For example, pln"></div>
     <div class="field" id="pfCat"><label for="planCat">Category it is spent in (optional)</label><select id="planCat"></select></div>
   </div>
   <p id="planHint" class="note" style="margin:12px 4px 0"></p>
   <p id="planMsg" class="err" role="alert"></p>
   <button id="planSave" class="primary" style="margin-top:8px">Save</button>
+  <button id="planPaid" class="ghost" style="margin-top:10px" hidden>Mark as paid</button>
   <button id="planRemove" class="ghost" style="margin-top:10px" hidden>Remove from plan</button>
 </section>
 

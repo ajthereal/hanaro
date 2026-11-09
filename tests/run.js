@@ -329,6 +329,24 @@ eq('flexible is on pace when under the line', [pl.flexible.expected, pl.flexible
 eq('flexible per day left', [pl.flexible.left, pl.flexible.daysLeft, pl.flexible.perDay], [1500000, 11, 136000]);
 eq('plan total', pl.planned, 4500000 + 2400000 + 500000 + 3000000);
 eq('last month comparison at the same day', [pl.compare.thisSpent, pl.compare.lastSpent, pl.compare.diff], [6000000, 3500000, -2500000]);
+// each fixed bill is tracked on its own: payee words, partial amounts, a Paid tap, and bills that share a category
+const shx = (id, n, cat, day, payee) => ({ id, date: day.slice(0, 10), timestamp: day, txn_type: 'purchase', idr_amount: n, account: 'Bank A', payee, category: cat, status: 'auto', source: 'email' });
+const sharedPlan = [
+  { month: '2026-11', item: 'Electricity', kind: 'fixed', amount_idr: 2000000, category: 'Utilities & internet', match: 'pln', active: 'Y' },
+  { month: '2026-11', item: 'Water', kind: 'fixed', amount_idr: 200000, category: 'Utilities & internet', match: 'pdam', active: 'Y' },
+  { month: '2026-11', item: 'Mama', kind: 'fixed', amount_idr: 3700000, category: 'Family support', match: 'mama,sumiati', active: 'Y' },
+  { month: '2026-11', item: 'Milka', kind: 'fixed', amount_idr: 2600000, category: 'Family support', match: 'milka', active: 'Y' },
+  { month: '2026-11', item: 'School', kind: 'fixed', amount_idr: 4916666, category: 'School & courses', active: 'Y' },
+  { month: '2026-11', item: 'KUR', kind: 'fixed', amount_idr: 9126582, category: 'Debt payment', active: 'Y' }
+];
+const sharedTx = [shx('s1', 1000000, 'Utilities & internet', '2026-11-03T10:00:00+07:00', 'PLN Prepaid'), shx('s2', 3700000, 'Family support', '2026-11-05T10:00:00+07:00', 'Transfer Mama'), shx('s3', 4916666, 'School & courses', '2026-11-04T10:00:00+07:00', 'Card installment')];
+const fxp = L.computePlan_({ plan: sharedPlan, txns: sharedTx, accounts: planAcc, today: '2026-11-09' }).fixed;
+const fst = (n) => fxp.find((f) => f.item === n);
+eq('shared category: only the bill with the matching payee is touched', [fst('Electricity').status, fst('Water').status, fst('Mama').status, fst('Milka').status], ['part', 'later', 'paid', 'later']);
+eq('part paid shows what was paid and when', [fst('Electricity').spent, fst('Electricity').paidOn], [1000000, '2026-11-03']);
+eq('no payee words uses the category when it is not shared', [fst('School').status, fst('KUR').status], ['paid', 'later']);
+const tapped = L.computePlan_({ plan: sharedPlan, txns: sharedTx, accounts: planAcc, today: '2026-11-09', paid: [{ month: '2026-11', item: 'KUR', amount_idr: 9126582, paid_date: '2026-11-08' }, { month: '2026-11', item: 'Electricity', amount_idr: 1000000, paid_date: '2026-11-08' }, { month: '2026-10', item: 'Water', amount_idr: 200000, paid_date: '2026-10-08' }] }).fixed;
+eq('a Paid tap counts, only for its own month', [tapped.find((f) => f.item === 'KUR').status, tapped.find((f) => f.item === 'Electricity').status, tapped.find((f) => f.item === 'Water').status], ['paid', 'paid', 'later']);
 const noPlan = L.computePlan_({ plan: [], txns: planTx, accounts: planAcc, today: '2026-11-20' });
 eq('no plan means no flexible card and a suggestion', [noPlan.flexible, noPlan.suggestFlexible], [null, 3500000]);
 const over = L.computePlan_({ plan: planRows, txns: planTx.concat([pt('p6', 900000, 'Fun', '2026-11-16T12:00:00+07:00')]), accounts: planAcc, today: '2026-11-20' });

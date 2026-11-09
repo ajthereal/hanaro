@@ -299,8 +299,12 @@
       '<p class="note">Fixed bills, money set aside for yearly costs, and one flexible number for everything else.</p></div>';
     html += '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Fixed</div><span class="note">' + rpShort(p.fixedTotal) + '</span></div>';
     p.fixed.forEach(function (f, i) {
-      var tag = { paid: '<span class="tag paid">PAID</span>', soon: '<span class="tag soon">IN ' + f.daysTo + ' DAY' + (f.daysTo === 1 ? '' : 'S') + '</span>', late: '<span class="tag late">OVERDUE</span>', later: f.due ? '<span class="tag gray">LATER</span>' : '' }[f.status];
-      html += '<button class="prow2" data-edit="fixed" data-i="' + i + '"><span class="l"><span class="p">' + esc(f.item) + '</span><span class="s">' + (f.dueDay ? 'Due on the ' + f.dueDay + (f.dueDay === 1 ? 'st' : f.dueDay === 2 ? 'nd' : f.dueDay === 3 ? 'rd' : 'th') : 'No due day') + '</span></span><span class="r">' + rp(f.amount) + ' ' + tag + '</span></button>';
+      var tag = { paid: '<span class="tag paid">PAID</span>', part: '<span class="tag soon">PART PAID</span>', soon: '<span class="tag soon">IN ' + f.daysTo + ' DAY' + (f.daysTo === 1 ? '' : 'S') + '</span>', late: '<span class="tag late">OVERDUE</span>', later: f.due ? '<span class="tag gray">LATER</span>' : '<span class="tag gray">NOT YET</span>' }[f.status];
+      var ord = function (n) { return n + (n === 1 ? 'st' : n === 2 ? 'nd' : n === 3 ? 'rd' : 'th'); };
+      var sub = f.status === 'paid' ? 'Paid' + (f.paidOn ? ' ' + Number(f.paidOn.slice(8, 10)) + ' ' + PM[f.paidOn.slice(5, 7)] : '') + ' · ' + rp(f.spent)
+        : f.status === 'part' ? rp(f.spent) + ' of ' + rp(f.amount)
+        : (f.dueDay ? 'Due on the ' + ord(f.dueDay) : 'Not paid yet this month');
+      html += '<button class="prow2" data-edit="fixed" data-i="' + i + '"><span class="l"><span class="p">' + esc(f.item) + '</span><span class="s">' + sub + '</span></span><span class="r">' + rp(f.amount) + ' ' + tag + '</span></button>';
     });
     if (!p.fixed.length) html += '<p class="note" style="padding:10px 0 0">Rent, school fees, internet and other bills that are the same every month.</p>';
     html += '<button class="addrow" data-add="fixed">+ Add a fixed bill</button></div>';
@@ -347,7 +351,9 @@
     var titles = { fixed: 'Fixed bill', nonmonthly: 'Yearly or occasional cost', flexible: 'Flexible number' };
     $('planTitle').textContent = (row ? 'Change ' : 'Add ') + titles[kind].toLowerCase();
     $('pfName').hidden = kind === 'flexible'; $('pfDue').hidden = kind !== 'fixed'; $('pfTarget').hidden = kind !== 'nonmonthly'; $('pfEvery').hidden = kind !== 'nonmonthly';
-    $('pfAmount').hidden = kind === 'nonmonthly'; $('pfCat').hidden = kind === 'flexible';
+    $('pfAmount').hidden = kind === 'nonmonthly'; $('pfCat').hidden = kind === 'flexible'; $('pfMatch').hidden = kind !== 'fixed';
+    $('planMatch').value = row && row.match ? row.match : '';
+    $('planPaid').hidden = !(kind === 'fixed' && row && row.status !== 'paid');
     $('planAmountLabel').textContent = kind === 'flexible' ? 'Amount for the month (Rp)' : 'Amount per month (Rp)';
     $('planName').value = row ? row.item : ''; $('planName').disabled = !!row;
     $('planAmount').value = row ? (kind === 'flexible' ? row.amount : row.amount) || '' : (suggest || '');
@@ -356,7 +362,7 @@
     var sel = $('planCat'); sel.innerHTML = '<option value="">None</option>';
     (state.cats || []).filter(function (c) { return !c.held; }).forEach(function (c) { var o = document.createElement('option'); o.value = c.category; o.textContent = c.category; sel.appendChild(o); });
     sel.value = row && row.category ? row.category : '';
-    $('planHint').textContent = { fixed: 'Pick the category it is paid under so Hanaro can mark it paid by itself.', nonmonthly: 'Hanaro sets aside the target divided by the months. Pick the category so spending on it shows up here.', flexible: 'Fixed and non-monthly categories are left out of this number.' }[kind];
+    $('planHint').textContent = { fixed: 'Hanaro marks it paid when a purchase has one of the payee words, separated by commas, for example pln. Without payee words it uses the category, but only if no other bill shares it. Money paid some other way: tap Mark as paid.', nonmonthly: 'Hanaro sets aside the target divided by the months. Pick the category so spending on it shows up here.', flexible: 'Fixed and non-monthly categories are left out of this number.' }[kind];
     $('planMsg').textContent = ''; $('planRemove').hidden = !row || kind === 'flexible';
     $('planEdit').hidden = false; window.scrollTo(0, 0);
   }
@@ -374,10 +380,20 @@
     } else {
       args.amount = digits('planAmount');
       if (!args.amount) { m.textContent = 'Type the amount as a number.'; return; }
-      if (k === 'fixed') { var dd = digits('planDue'); args.dueDay = $('planDue').value.trim() === '' ? '' : dd; if (args.dueDay !== '' && (dd < 1 || dd > 31)) { m.textContent = 'The due day must be from 1 to 31.'; return; } }
+      if (k === 'fixed') { args.match = $('planMatch').value.trim(); var dd = digits('planDue'); args.dueDay = $('planDue').value.trim() === '' ? '' : dd; if (args.dueDay !== '' && (dd < 1 || dd > 31)) { m.textContent = 'The due day must be from 1 to 31.'; return; } }
     }
     closePlan(); banner('Saved');
     send('set_plan', args, 'the plan for ' + (args.item || 'Flexible')).then(function (ok) { if (ok && !queue.length) { bootP = null; render(); } });
+  });
+  $('planPaid').addEventListener('click', function () {
+    var p = state.plan; if (!p.row) return;
+    var left = Math.max(0, p.row.amount - (p.row.spent || 0));
+    var typed = prompt('How much was paid for ' + p.row.item + '? (Rp)', String(left || p.row.amount));
+    if (typed === null) return;
+    var amt = Number(String(typed).replace(/[^\d]/g, ''));
+    if (!amt) { $('planMsg').textContent = 'Type the amount that was paid as a number.'; return; }
+    closePlan(); banner('Saved');
+    send('plan_paid', { item: p.row.item, amount: amt }, 'marking ' + p.row.item + ' as paid').then(function (ok) { if (ok && !queue.length) { bootP = null; render(); } });
   });
   $('planRemove').addEventListener('click', function () {
     var p = state.plan; if (!p.row) return;
