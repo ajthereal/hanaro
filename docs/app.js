@@ -835,6 +835,7 @@
   $('addNewType').addEventListener('input', function () { $('addMsg').textContent = ''; });
   $('addBtn').addEventListener('click', openAdd);
   $('addCancel').addEventListener('click', closeAdd); $('sheetBack').addEventListener('click', closeAdd);
+  $('entFam').addEventListener('click', function () { setEntity('Family'); }); $('entBiz').addEventListener('click', function () { setEntity('Business'); });
   $('kindSpent').addEventListener('click', function () { setKind('spent'); }); $('kindGot').addEventListener('click', function () { setKind('got'); });
   $('kindHeld').addEventListener('click', function () { setKind('held'); });
   $('addSave').addEventListener('click', function () {
