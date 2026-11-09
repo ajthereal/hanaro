@@ -176,7 +176,7 @@
       var v = b.getAttribute('data-go'), on = state.view === v || (v === 'status' && state.view === 'payees') || (v === 'spending' && state.view === 'activity');
       b.className = on ? 'on' : '';
       b.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[v] + '</svg>' +
-        (on ? (state.view === 'activity' && v === 'spending' ? 'ACTIVITY' : LABELS[v]) : '') + (v === 'review' && state.counts.review ? '<span class="badge">' + state.counts.review + '</span>' : '');
+        '<span class="lb">' + (state.view === 'activity' && v === 'spending' ? 'ACTIVITY' : LABELS[v]) + '</span>' + (v === 'review' && state.counts.review ? '<span class="badge">' + state.counts.review + '</span>' : '');
     });
   }
   function setPill(iso, err) {
@@ -193,14 +193,27 @@
   document.querySelectorAll('nav [data-go]').forEach(function (b) { b.addEventListener('click', function () { go(b.getAttribute('data-go')); }); });
   $('syncPill').addEventListener('click', function () { render(); });
 
+  var wideMq = window.matchMedia ? window.matchMedia('(min-width: 1000px)') : { matches: false };
+  function wide() { return wideMq.matches; }
+  if (wideMq.addEventListener) wideMq.addEventListener('change', function () { if (conf().key && !$('app').hidden) render(); });
+  /* Wide screens (iPad landscape, desktop): Today, Spending plan and Review side by side. Same data, same screens. */
+  function paintBoard(v) {
+    v.innerHTML = '<div class="board"><div id="bc1"></div><div id="bc2"></div><div id="bc3"></div></div>';
+    var h = snap('home'), p = snap('plan'), r = snap('review');
+    if (h && usable('home', h)) paintHome($('bc1'), h.d);
+    if (p && usable('spending', p)) paintSpending($('bc2'), p.d);
+    if (r) paintReview($('bc3'), r.d);
+  }
   var TITLE = 'font-size:30px;font-weight:300;letter-spacing:-.5px;margin:6px 0 0 2px';
   function usable(name, c) { return c && (name !== 'home' || c.d.spentToday !== undefined) && (name !== 'spending' || c.d.fixed !== undefined); }
   function render() {
     var v = $('view'), name = state.view, tok = ++state.token;
+    v.setAttribute('data-v', name === 'home' && wide() ? 'board' : name);
+    if (name === 'home' && wide()) name = 'board';
     if (name === 'status') return renderStatus(v, tok);
     if (name === 'payees') return renderPayees(v, tok);
-    var paint = { home: paintHome, review: paintReview, activity: paintActivity, spending: paintSpending }[name];
-    var ck = name === 'spending' ? 'plan' : name;
+    var paint = { board: paintBoard, home: paintHome, review: paintReview, activity: paintActivity, spending: paintSpending }[name];
+    var ck = name === 'spending' ? 'plan' : name === 'board' ? 'home' : name;
     var c = snap(ck); if (!usable(name, c)) c = null;
     if (c) paint(v, c.d); else v.innerHTML = '<div class="empty">Loading…</div>';
     state.busy = true; setPill();
@@ -901,7 +914,7 @@
       h.avgPerDay = Math.round(h.spentMonth / Math.max(1, Number(now.slice(8, 10))));
     });
     closeAdd(); banner('Saved');
-    var c0 = snap(state.view === 'spending' ? 'plan' : state.view); if (c0 && state.view !== 'status' && !editing($('view'))) ({ home: paintHome, review: paintReview, activity: paintActivity, spending: paintSpending })[state.view]($('view'), c0.d);
+    var c0 = snap(state.view === 'spending' ? 'plan' : state.view); if (c0 && state.view !== 'status' && !editing($('view'))) { if (state.view === 'home' && wide()) paintBoard($('view')); else ({ home: paintHome, review: paintReview, activity: paintActivity, spending: paintSpending })[state.view]($('view'), c0.d); }
     send('add_txn', { kind: kind, currency: foreign ? cur : 'IDR', idr_amount: typedIdr || undefined, amount: amt, payee: payee, category: cat, account: acct, memo: memo, entity: entity, pt_file: ptFile, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null, photo: photo || undefined }, label).then(function (ok) { if (ok && !queue.length) render(); });
   });
 
