@@ -97,6 +97,15 @@ eq('bad plan amount is refused plainly', perr, 'Type the amount as a number abov
 run("removePlan_(book_(), 'aj', { item: 'Rent', kind: 'fixed' })");
 eq('removed plan item is gone from the view', run("planView_(book_(), 'aj')").fixed.length, 0);
 
+// Paid tap: the PlanPaid tab appears on first tap and a payee-word bill reads it back
+run("setPlan_(book_(), 'aj', { kind: 'fixed', item: 'Electricity', amount: 2000000, match: 'pln' })");
+let merr = ''; try { run("markPaid_(book_(), 'aj', { item: 'Electricity', amount: 'abc' })"); } catch (e) { merr = e.userMessage; }
+eq('bad paid amount is refused plainly', merr, 'Type the amount that was paid as a number above zero.');
+run("markPaid_(book_(), 'aj', { item: 'Electricity', amount: 2000000 })");
+const ev = run("planView_(book_(), 'aj')").fixed.find((f) => f.item === 'Electricity');
+eq('a Paid tap shows the bill as paid', [ev.status, ev.spent, ev.match], ['paid', 2000000, 'pln']);
+eq('a Paid tap is written to the Audit tab', sb.__book.data.Audit.some((r) => r[2] === 'plan_paid'), true);
+
 // bootstrap shape
 const b = run("bootstrap_(book_(), 'aj')");
 eq('bootstrap has every screen', Object.keys(b).sort(), ['activity', 'categories', 'home', 'plan', 'review']);

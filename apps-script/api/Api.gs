@@ -107,16 +107,18 @@ function data_(book, who) {
   txns = dropMatchedManual_(txns);
   return {
     book: book, accounts: accounts, txns: txns, buckets: rows_(book, 'Buckets'), balances: rows_(book, 'Balances'),
-    plan: planRows_(book), history: historyRows_(book), debts: rows_(book, 'Debts'), summary: rows_(book, 'Summary'),
+    plan: planRows_(book), paid: paidRows_(book), history: historyRows_(book), debts: rows_(book, 'Debts'), summary: rows_(book, 'Summary'),
     today: Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM-dd')
   };
 }
 
-var PLAN_HEADERS = ['month', 'item', 'kind', 'amount_idr', 'due_day', 'target_idr', 'every_months', 'category', 'active', 'set_by'];
+var PLAN_HEADERS = ['month', 'item', 'kind', 'amount_idr', 'due_day', 'target_idr', 'every_months', 'category', 'active', 'set_by', 'match'];
 
 /** The Plan tab is created the first time a plan is saved. Until then there is simply no plan. */
 /** Imported YNAB history (month x category totals). Optional: used only to suggest the Flexible number. */
 function historyRows_(book) { return book.getSheetByName('YNAB_Monthly') ? rows_(book, 'YNAB_Monthly') : []; }
+var PAID_HEADERS = ['month', 'item', 'amount_idr', 'paid_date', 'set_by'];
+function paidRows_(book) { return book.getSheetByName('PlanPaid') ? rows_(book, 'PlanPaid') : []; }
 function planRows_(book) { return book.getSheetByName('Plan') ? rows_(book, 'Plan') : []; }
 
 function ensurePlan_(book) {
@@ -126,9 +128,28 @@ function ensurePlan_(book) {
   sh.getRange(1, 1, 1, PLAN_HEADERS.length).setValues([PLAN_HEADERS]);
 }
 
+/** The match column was added later: an older Plan tab gets it the first time it is needed. */
+function ensureMatchColumn_(sh) {
+  var h = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  if (h.indexOf('match') === -1) sh.getRange(1, h.length + 1).setValue('match');
+}
+
+/** One tap on "Paid": records money paid outside what Hanaro can see. Adds a row, never overwrites. */
+function markPaid_(book, who, req) {
+  var item = String(req.item || '').trim(), amt = Number(req.amount);
+  if (!item) throw userError_('Choose the bill that was paid.');
+  if (isNaN(amt) || amt <= 0) throw userError_('Type the amount that was paid as a number above zero.');
+  var today = Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM-dd');
+  var sh = book.getSheetByName('PlanPaid');
+  if (!sh) { sh = book.insertSheet('PlanPaid'); sh.getRange(1, 1, 1, PAID_HEADERS.length).setValues([PAID_HEADERS]); }
+  append_(book, 'PlanPaid', [{ month: today.slice(0, 7), item: item, amount_idr: amt, paid_date: today, set_by: NAMES[who] }]);
+  audit_(book, NAMES[who], 'plan_paid', 'PlanPaid', item, 'amount_idr', '', amt);
+  return { saved: true };
+}
+
 function planView_(book, who) {
   var d = data_(book, who);
-  return computePlan_({ plan: d.plan, txns: d.txns, accounts: d.accounts, today: d.today });
+  return computePlan_({ plan: d.plan, txns: d.txns, accounts: d.accounts, today: d.today, paid: d.paid });
 }
 
 /** Saves one planned item for this month. History is kept: a change adds a row, it never overwrites. */
@@ -154,7 +175,13 @@ function setPlan_(book, who, req) {
       row.due_day = dd;
     }
   }
+  if (kind === 'fixed' && req.match !== undefined) {
+    var mt = String(req.match || '').trim();
+    if (mt.length > 80) throw userError_('Keep the payee words under 80 characters.');
+    row.match = mt;
+  }
   ensurePlan_(book);
+  ensureMatchColumn_(book.getSheetByName('Plan'));
   append_(book, 'Plan', [row]);
   audit_(book, NAMES[who], 'set_plan', 'Plan', item, kind, '', row.amount_idr || row.target_idr);
   return { saved: true };
@@ -193,6 +220,7 @@ function handle_(req, who) {
   if (a === 'plan') return planView_(book, who);
   if (a === 'set_plan') return setPlan_(book, who, req);
   if (a === 'remove_plan') return removePlan_(book, who, req);
+  if (a === 'plan_paid') return markPaid_(book, who, req);
   if (a === 'review') {
     var d2 = data_(book, who), settled = settledPayNow(d2.txns), byId = {};
     d2.txns.forEach(function (t) { byId[t.id] = t; });
@@ -454,7 +482,7 @@ function bootstrap_(book, who) {
   var cats = rows_(book, 'Categories').filter(function (c) { return String(c.active).toUpperCase() !== 'N'; })
     .map(function (c) { return { category: c.category, bucket: c.bucket, held: String(c.counts_in_bucket).toUpperCase() === 'HELD' }; });
   var accts = d.accounts.filter(function (x) { return x.active !== 'N' && x.entity !== 'PT' && (x.type === 'bank' || x.type === 'credit card'); }).map(function (x) { return x.account; });
-  var plan = computePlan_({ plan: d.plan, txns: d.txns, accounts: d.accounts, today: d.today });
+  var plan = computePlan_({ plan: d.plan, txns: d.txns, accounts: d.accounts, today: d.today, paid: d.paid });
   return { home: home, review: { items: review }, activity: { items: activity }, categories: { categories: cats, accounts: accts }, plan: plan };
 }
 

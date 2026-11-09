@@ -277,7 +277,7 @@ function computeHome(d) {
     cash += num_(b.confirmed_balance); counted++;
     if (!oldest || String(b.date_confirmed) < oldest) oldest = String(b.date_confirmed);
   });
-  var bills = (d.plan && d.plan.length) ? billsFromPlan_(d.plan, d.txns, d.accounts, today) : (d.bills || []);
+  var bills = (d.plan && d.plan.length) ? billsFromPlan_(d.plan, d.txns, d.accounts, today, d.paid) : (d.bills || []);
   var ob = obligationsUntil_(today, horizon, bills, d.debts || []);
   var obTotal = ob.reduce(function (a, o) { return a + o.amount; }, 0);
 
@@ -292,7 +292,7 @@ function computeHome(d) {
   var heldByType = Object.keys(heldBy).map(function (k) { return { type: k, amount: heldBy[k] }; })
     .filter(function (x) { return x.amount !== 0; }).sort(function (a, b) { return b.amount - a.amount; });
 
-  var planNow = computePlan_({ plan: d.plan || [], txns: d.txns, accounts: d.accounts, today: today, history: d.history });
+  var planNow = computePlan_({ plan: d.plan || [], txns: d.txns, accounts: d.accounts, today: today, history: d.history, paid: d.paid });
   var hasFlex = !!planNow.flexible;
   var notes = [], safe = null, needs = [];
   if (!counted) needs.push('balances');
@@ -359,7 +359,7 @@ function prevMonth_(ym) {
 function familySpend_(txns, accounts) {
   var pt = ptAccounts_(accounts);
   return (txns || []).filter(function (t) { return countsAsSpend_(t) && !isBusiness_(t, pt); })
-    .map(function (t) { return { day: day_(t.timestamp || t.date), cat: t.category || '', n: num_(t.idr_amount) }; });
+    .map(function (t) { return { day: day_(t.timestamp || t.date), cat: t.category || '', n: num_(t.idr_amount), txt: (String(t.payee || '') + ' ' + String(t.memo || '')).toLowerCase() }; });
 }
 
 /** Latest row per item (month up to this month). Removing an item adds a row with active N. */
@@ -408,8 +408,8 @@ function historyCore_(history, ym, planned) {
 }
 
 /** Fixed plan items as bills, so the plan is the only list of bills. A bill counts as paid once its category has the money out this month. */
-function billsFromPlan_(plan, txns, accounts, today) {
-  var p = computePlan_({ plan: plan || [], txns: txns, accounts: accounts, today: today }), ym = today.slice(0, 7);
+function billsFromPlan_(plan, txns, accounts, today, paid) {
+  var p = computePlan_({ plan: plan || [], txns: txns, accounts: accounts, today: today, paid: paid }), ym = today.slice(0, 7);
   return p.fixed.filter(function (f) { return f.dueDay !== null && f.amount > 0; })
     .map(function (f) { return { bill: f.item, amount_idr: f.amount, due_day: f.dueDay, active: 'Y', last_paid: f.status === 'paid' ? ym + '-01' : '' }; });
 }
@@ -424,7 +424,8 @@ function computePlan_(d) {
   var items = planLatest_(d.plan, ym), spend = familySpend_(d.txns, d.accounts);
   var byCat = {}, planned = {};
   spend.forEach(function (x) { if (x.day.slice(0, 7) === ym) byCat[x.cat] = (byCat[x.cat] || 0) + x.n; });
-  var fixed = [], non = [], flexRow = null;
+  var fixed = [], non = [], flexRow = null, sharedCat = {};
+  items.forEach(function (r) { if (r.kind === 'fixed' && r.category) sharedCat[r.category] = (sharedCat[r.category] || 0) + 1; });
   items.forEach(function (r) {
     if (r.category) planned[r.category] = true;
     var spent = r.category ? (byCat[r.category] || 0) : 0;
@@ -434,10 +435,26 @@ function computePlan_(d) {
         var dd = Math.min(Number(r.due_day), dim);
         due = ym + '-' + (dd < 10 ? '0' : '') + dd; daysTo = daysBetween_(today, due);
       }
-      if (r.category && spent >= amt * 0.95 && amt > 0) status = 'paid';
+      // What counts as paid for this bill: purchases whose payee or memo has one of its keywords, plus any "Paid" taps.
+      // Without keywords it falls back to the category, but only if no other fixed bill shares that category.
+      var keys = String(r.match || '').toLowerCase().split(',').map(function (k) { return k.trim(); }).filter(function (k) { return k; });
+      var paidAmt = 0, paidOn = '', how = '';
+      if (keys.length) {
+        spend.forEach(function (x) {
+          if (x.day.slice(0, 7) !== ym) return;
+          if (keys.some(function (k) { return x.txt.indexOf(k) !== -1; })) { paidAmt += x.n; if (x.day > paidOn) paidOn = x.day; }
+        });
+        how = 'keyword';
+      } else if (r.category && sharedCat[r.category] === 1) { paidAmt = spent; how = 'category'; }
+      (d.paid || []).forEach(function (pr) {
+        if (String(pr.month).slice(0, 7) !== ym || pr.item !== r.item) return;
+        paidAmt += num_(pr.amount_idr); var pd = day_(pr.paid_date); if (pd > paidOn) paidOn = pd; how = how || 'tap';
+      });
+      if (amt > 0 && paidAmt >= amt * 0.95) status = 'paid';
+      else if (paidAmt > 0) status = 'part';
       else if (daysTo !== null && daysTo < 0) status = 'late';
       else if (daysTo !== null && daysTo <= 3) status = 'soon';
-      fixed.push({ item: r.item, amount: amt, dueDay: due ? Number(due.slice(8, 10)) : null, due: due, daysTo: daysTo, spent: spent, category: r.category || '', status: status });
+      fixed.push({ item: r.item, amount: amt, dueDay: due ? Number(due.slice(8, 10)) : null, due: due, daysTo: daysTo, spent: paidAmt, paidOn: paidOn, how: how, match: String(r.match || ''), category: r.category || '', status: status });
     } else if (r.kind === 'nonmonthly') {
       var target = num_(r.target_idr), every = Math.max(1, num_(r.every_months) || 12);
       non.push({ item: r.item, target: target, every: every, setAside: Math.ceil(target / every), spent: spent, category: r.category || '' });
