@@ -352,6 +352,21 @@ eq('flexible suggestion falls back to imported history', L.computePlan_({ plan: 
 const homePlanT = L.computeHome(Object.assign({}, base, { plan: planRowsT, history: [], bills: [], buckets: [], today: '2026-11-19' }));
 eq('home safe-to-spend follows the plan Flexible number', [homePlanT.safeToSpend > 0, homePlanT.needs.indexOf('plan') === -1], [true, true]);
 
+const hintsT = Y.buildPayeeHints_(
+  [{ payee: 'Pertamina SPBU 31', category: 'Operational Car - Petrol', outflow: 300000 }, { payee: 'Pertamina SPBU 31', category: 'Operational Car - Petrol', outflow: 250000 }, { payee: 'Pertamina SPBU 31', category: 'Family Car - Petrol', outflow: 100000 },
+   { payee: 'Transfer : BCA', category: 'Ching', outflow: 500000 }, { payee: 'Salary', category: 'Eat Out', outflow: 0 }, { payee: 'Lonely Cafe', category: 'Eat Out', outflow: 40000 }],
+  Y.ynabCategoryMap_([{ category: 'Fuel', bucket: 'Car & transport', ynab_categories_mapped: 'Operational Car - Petrol; Family Car - Petrol' }, { category: 'Eating out', bucket: 'Food', ynab_categories_mapped: 'Eat Out' }]),
+  [{ match_text: 'kfc', category: 'Eating out', times_used: 12 }]);
+eq('payee hints: usual category, counts, one-offs and rule-only places', hintsT.map((h) => h.p + '>' + h.c + '>' + h.n), ['Kfc>Eating out>12', 'Pertamina SPBU 31>Fuel>3', 'Lonely Cafe>Eating out>1']);
+
+// ---------- Foreign currency: a typed SGD entry meets the bank email in rupiah ----------
+const fx = (o) => Object.assign({ txn_type: 'purchase', account: 'Card A', category: 'Eating out', idr_amount: 62000, orig_amount: 5.5, orig_currency: 'SGD', source: 'manual', status: 'confirmed', flags: 'fx_est', timestamp: '2026-11-09T12:00:00+07:00' }, o);
+const bankMail = (o) => Object.assign({ txn_type: 'purchase', account: 'Card A', idr_amount: 64350, orig_currency: 'IDR', source: 'email', status: 'auto', flags: '', timestamp: '2026-11-09T12:05:00+07:00' }, o);
+eq('typed SGD estimate pairs with the bank email that is a few percent different', L.findMatches_([fx({ id: 'm' }), bankMail({ id: 'e' })]).map((p) => p.manual.id + '>' + p.email.id), ['m>e']);
+eq('a much different amount is not paired', L.findMatches_([fx({ id: 'm' }), bankMail({ id: 'e', idr_amount: 140000 })]).length, 0);
+eq('an IDR entry still needs the exact amount', L.findMatches_([fx({ id: 'm', orig_currency: 'IDR', flags: '', orig_amount: '' }), bankMail({ id: 'e' })]).length, 0);
+eq('closest foreign amount wins', L.findMatches_([fx({ id: 'm' }), bankMail({ id: 'far', idr_amount: 68000 }), bankMail({ id: 'near', idr_amount: 63000 })]).map((p) => p.email.id), ['near']);
+
 failed += require('./glue.js');
 
 console.log(failed ? '\n' + failed + ' FAILED' : '\nAll passed');

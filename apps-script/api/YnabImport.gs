@@ -130,6 +130,34 @@ function importYnab() {
   Logger.log('Done. ' + fresh.length + ' transactions added, ' + rules.length + ' payee rules added. Now delete YNAB_TOKEN and revoke the token in YNAB.');
 }
 
+/**
+ * Payee suggestions for the Add screen, from the imported YNAB history plus the learned rules.
+ * One entry per place: { p: name, c: usual category, n: times }. Places seen only once are kept too, so typing a name you have used before always finds it.
+ */
+function buildPayeeHints_(archive, catMap, rules) {
+  var by = {};
+  (archive || []).forEach(function (r) {
+    var name = String(r.payee || '').trim(), m = catMap[r.category];
+    if (!name || !m || !(Number(r.outflow) > 0) || r.transfer_account || /^(transfer|starting balance|reconciliation)/i.test(name)) return;
+    var k = ruleKey(name);
+    if (k.length < 3) return;
+    var b = by[k] || (by[k] = { p: name, n: 0, cats: {}, names: {} });
+    b.n++; b.cats[m.category] = (b.cats[m.category] || 0) + 1; b.names[name] = (b.names[name] || 0) + 1;
+  });
+  var out = Object.keys(by).map(function (k) {
+    var b = by[k], top = Object.keys(b.cats).sort(function (x, y) { return b.cats[y] - b.cats[x]; })[0];
+    var nm = Object.keys(b.names).sort(function (x, y) { return b.names[y] - b.names[x]; })[0];
+    return { p: nm, c: top, n: b.n };
+  });
+  var have = {}; out.forEach(function (h) { have[ruleKey(h.p)] = true; });
+  (rules || []).forEach(function (r) {
+    var k = ruleKey(r.match_text);
+    if (!k || have[k] || !r.category) return;
+    out.push({ p: k.replace(/\b\w/g, function (c) { return c.toUpperCase(); }), c: r.category, n: Number(r.times_used) || 1 });
+  });
+  return out.sort(function (a, b) { return b.n - a.n; }).slice(0, 1500);
+}
+
 if (typeof module !== 'undefined') {
-  module.exports = { flattenYnab_: flattenYnab_, ynabCategoryMap_: ynabCategoryMap_, learnRulesFromHistory_: learnRulesFromHistory_ };
+  module.exports = { buildPayeeHints_: buildPayeeHints_, flattenYnab_: flattenYnab_, ynabCategoryMap_: ynabCategoryMap_, learnRulesFromHistory_: learnRulesFromHistory_ };
 }

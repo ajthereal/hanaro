@@ -1,5 +1,5 @@
 /* Keeps the app shell on the device so it opens instantly. Data comes from the API and is saved by the app itself. */
-var CACHE = 'hanaro-shell-v6';
+var CACHE = 'hanaro-shell-v8';
 var SHELL = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-180.png'];
 self.addEventListener('install', function (e) { e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); }).then(function () { return self.skipWaiting(); })); });
 self.addEventListener('activate', function (e) {

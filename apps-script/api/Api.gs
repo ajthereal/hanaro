@@ -175,7 +175,7 @@ function slim_(t, settled) {
     id: t.id, date: String(t.date).slice(0, 10), timestamp: t.timestamp, type: t.txn_type, amount: t.idr_amount === '' ? null : Number(t.idr_amount),
     account: t.account, payee: t.payee, category: t.category, bucket: t.bucket, status: t.status, memo: t.memo, source: t.source,
     payNow: f.indexOf('pay_now') !== -1, paid: !!(settled && settled[t.id]), links: t.links_to_id || '', who: t.who || '',
-    cleared: t.source === 'email', receipt: !!t.receipt_drive_id, entity: t.entity || '', ptFile: String(t.pt_file).toUpperCase() === 'Y', lat: has_(t.lat) && t.lat !== '' ? Number(t.lat) : null, lng: has_(t.lng) && t.lng !== '' ? Number(t.lng) : null
+    cleared: t.source === 'email', receipt: !!t.receipt_drive_id, entity: t.entity || '', origAmount: has_(t.orig_amount) && t.orig_amount !== '' ? Number(t.orig_amount) : null, origCurrency: t.orig_currency || '', est: flagsOf_(t).indexOf('fx_est') !== -1, ptFile: String(t.pt_file).toUpperCase() === 'Y', lat: has_(t.lat) && t.lat !== '' ? Number(t.lat) : null, lng: has_(t.lng) && t.lng !== '' ? Number(t.lng) : null
   };
 }
 
@@ -216,6 +216,10 @@ function handle_(req, who) {
   }
   if (a === 'status') return status_(book, who);
   if (a === 'payees') return { payees: payeeSummary_(data_(book, who).txns, rows_(book, 'Rules')), categories: categoryList_(book) };
+  if (a === 'payee_hints') {
+    var arch = book.getSheetByName('Archive_YNAB') ? rows_(book, 'Archive_YNAB') : [];
+    return { hints: buildPayeeHints_(arch, ynabCategoryMap_(rows_(book, 'Categories')), rows_(book, 'Rules')) };
+  }
   if (a === 'pt_file_list') return ptFileList_(book, who, req);
   if (a === 'set_payee_category') return setPayeeCategory_(book, who, req);
   if (a === 'attach_photo') return attachPhoto_(book, who, req);
@@ -373,9 +377,46 @@ function setStatus_(book, who, id, status, why) {
   return { saved: true };
 }
 
+var CURRENCIES = { IDR: 1, SGD: 1, MYR: 1, USD: 1, JPY: 1, EUR: 1, AUD: 1, THB: 1 };
+
+/** Rupiah per 1 unit of a currency: the card's last real rate (from the last 60 days) first, then today's market rate. Never invented. */
+function fxRate_(book, cur) {
+  var best = null, cutoff = Utilities.formatDate(new Date(Date.now() - 60 * 86400000), 'Asia/Jakarta', 'yyyy-MM-dd');
+  rows_(book, 'Transactions').forEach(function (t) {
+    if (t.orig_currency !== cur || !has_(t.fx_rate) || t.fx_rate === '' || String(t.date).slice(0, 10) < cutoff || flagsOf_(t).indexOf('fx_est') !== -1) return;
+    if (!best || String(t.timestamp) > best.ts) best = { ts: String(t.timestamp), rate: Number(t.fx_rate) };
+  });
+  if (best && best.rate > 0) return { rate: best.rate, source: 'card' };
+  var cache = CacheService.getScriptCache(), key = 'fx_' + cur, hit = cache.get(key);
+  if (hit) return { rate: Number(hit), source: 'market' };
+  try {
+    var res = UrlFetch_('https://open.er-api.com/v6/latest/' + cur);
+    var r = res && res.rates && res.rates.IDR;
+    if (r > 0) { cache.put(key, String(r), 6 * 3600); return { rate: r, source: 'market' }; }
+  } catch (e) {}
+  return null;
+}
+function UrlFetch_(url) {
+  var r = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  if (r.getResponseCode() !== 200) return null;
+  return JSON.parse(r.getContentText());
+}
+
 function addTxn_(book, who, req) {
-  var amt = Number(req.amount);
+  var cur = String(req.currency || 'IDR').toUpperCase();
+  if (!CURRENCIES[cur]) throw userError_('That currency is not set up. Use IDR, SGD, MYR, USD, JPY, EUR, AUD or THB.');
+  var amt = Number(req.amount), fx = null, est = false, origAmt = '';
   if (isNaN(amt) || amt <= 0) throw userError_('Type the amount as a number above zero.');
+  if (cur !== 'IDR') {
+    origAmt = Math.round(amt * 100) / 100;
+    var typedIdr = Number(req.idr_amount);
+    if (typedIdr > 0) { amt = Math.round(typedIdr); fx = Math.round(amt / origAmt * 10000) / 10000; }
+    else {
+      var fr = fxRate_(book, cur);
+      if (!fr) throw userError_('Hanaro could not find today\'s ' + cur + ' rate. Type the rupiah amount too, once, and it will remember the rate.');
+      fx = fr.rate; amt = Math.round(origAmt * fr.rate); est = true;
+    }
+  }
   if (!req.payee) throw userError_('Type who or what it was for.');
   var income = req.kind === 'income', held = req.kind === 'held';
   if (!income && !req.category) throw userError_(held ? 'Choose what kind of money this is.' : 'Choose a category.');
@@ -384,7 +425,7 @@ function addTxn_(book, who, req) {
   var now = nowIso_(), id = 't_' + Utilities.getUuid().replace(/-/g, '').slice(0, 12);
   var cat = income ? 'Income' : req.category;
   append_(book, 'Transactions', [{
-    id: id, date: req.date || now.slice(0, 10), timestamp: now, txn_type: held ? 'held_in' : (income ? 'income' : 'purchase'), idr_amount: amt, orig_currency: 'IDR',
+    id: id, date: req.date || now.slice(0, 10), timestamp: now, txn_type: held ? 'held_in' : (income ? 'income' : 'purchase'), idr_amount: amt, orig_amount: origAmt, orig_currency: cur, fx_rate: fx === null ? '' : fx, flags: est ? 'fx_est' : '',
     account: req.account || '', payee: req.payee, category: cat, bucket: (income || held) ? '' : bucketForCategory(rows_(book, 'Categories'), cat),
     who: NAMES[who], source: 'manual', settled: 'Y', status: 'confirmed', memo: req.memo || '', entity: (req.entity === 'Family' || req.entity === 'Business') ? req.entity : '', pt_file: req.pt_file ? 'Y' : '', created_at: now, updated_at: now,
     lat: has_(req.lat) && req.lat !== '' && req.lat !== null ? Number(req.lat) : '', lng: has_(req.lng) && req.lng !== '' && req.lng !== null ? Number(req.lng) : ''
@@ -443,6 +484,11 @@ function reconcile_(book, who) {
     if (mv('memo')) setField_(book, who, e, 'memo', mv('memo'));
     if (mv('lat') !== '') { setField_(book, who, e, 'lat', mv('lat')); setField_(book, who, e, 'lng', mv('lng')); }
     if (mv('receipt_drive_id')) setField_(book, who, e, 'receipt_drive_id', mv('receipt_drive_id'));
+    if (mv('orig_currency') && mv('orig_currency') !== 'IDR' && has_(mv('orig_amount'))) {
+      var real = num_(e.vals[e.h.indexOf('idr_amount')]), oa = num_(mv('orig_amount'));
+      setField_(book, who, e, 'orig_amount', oa); setField_(book, who, e, 'orig_currency', mv('orig_currency'));
+      if (oa > 0 && real > 0) setField_(book, who, e, 'fx_rate', Math.round(real / oa * 10000) / 10000);
+    }
     if (mv('entity')) setField_(book, who, e, 'entity', mv('entity'));
     if (mv('pt_file')) setField_(book, who, e, 'pt_file', mv('pt_file'));
     setField_(book, who, e, 'status', 'confirmed');

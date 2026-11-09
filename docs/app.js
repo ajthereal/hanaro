@@ -567,7 +567,7 @@
         else if (t.type === 'income') tag = '<span class="tag paid">RECEIVED</span>';
         else if (t.type === 'held_in') tag = '<span class="tag new">HELD FOR OTHERS</span>';
         else if (t.type === 'held_out') tag = '<span class="tag new">PASSED ON</span>';
-        html += '<div class="act"><div class="l"><div class="p">' + esc(t.payee || '(no name)') + '</div><div class="sub">' + esc(t.category || (t.type === 'payment' ? 'Paid to your card' : t.type === 'transfer' ? 'Sent to someone' : 'No category yet')) + ' · ' + esc(t.account) + '</div>' + (tag ? '<div style="margin-top:4px">' + tag + '</div>' : '') + (t.type === 'purchase' && String(t.id).indexOf('local_') !== 0 ? '<button class="link rc" data-photo="' + esc(t.id) + '">' + (t.receipt ? 'Receipt saved ✓ · Replace' : 'Add receipt photo') + '</button>' : '') + tagBtns(t) + '</div><div class="r">' + (t.amount === null ? '–' : (t.type === 'income' || t.type === 'held_in' ? '+' : '') + rp(t.amount)) + (t.cleared ? '<span class="clr" title="Confirmed by the bank email">✓</span>' : '') + '</div></div>';
+        html += '<div class="act"><div class="l"><div class="p">' + esc(t.payee || '(no name)') + '</div><div class="sub">' + esc(t.category || (t.type === 'payment' ? 'Paid to your card' : t.type === 'transfer' ? 'Sent to someone' : 'No category yet')) + ' · ' + esc(t.account) + '</div>' + (tag ? '<div style="margin-top:4px">' + tag + '</div>' : '') + (t.type === 'purchase' && String(t.id).indexOf('local_') !== 0 ? '<button class="link rc" data-photo="' + esc(t.id) + '">' + (t.receipt ? 'Receipt saved ✓ · Replace' : 'Add receipt photo') + '</button>' : '') + tagBtns(t) + '</div><div class="r">' + (t.amount === null ? '–' : (t.type === 'income' || t.type === 'held_in' ? '+' : '') + rp(t.amount)) + (t.cleared ? '<span class="clr" title="Confirmed by the bank email">✓</span>' : '') + (t.origCurrency && t.origCurrency !== 'IDR' && t.origAmount !== null ? '<div class="sub">' + esc(t.origCurrency) + ' ' + Number(t.origAmount).toFixed(2) + (t.est ? ' · est.' : '') + '</div>' : '') + '</div></div>';
       });
       if (open) html += '</div>';
       v.innerHTML = html;
@@ -712,15 +712,28 @@
     $('newTypeWrap').hidden = name !== '__new';
   }
   function fmtAmt(el) {
+    if (el.id === 'addAmount' && $('addCur').value !== 'IDR') {
+      // Foreign money keeps two decimals, for example 5.50 or 5,5. Either a dot or a comma works.
+      var v = el.value.replace(',', '.').replace(/[^\d.]/g, ''), i = v.indexOf('.');
+      if (i !== -1) v = v.slice(0, i + 1) + v.slice(i + 1).replace(/\./g, '').slice(0, 2);
+      el.value = v; return;
+    }
     var d = el.value.replace(/[^\d]/g, '');
     el.value = d ? Number(d).toLocaleString('id-ID') : '';
   }
+  function setCur(c) {
+    $('addCur').value = c; var foreign = c !== 'IDR';
+    $('addAmount').setAttribute('inputmode', foreign ? 'decimal' : 'numeric'); $('addAmount').value = '';
+    $('fxWrap').hidden = !foreign || state.kind !== 'spent'; $('addIdr').value = '';
+    LS.set('hanaro.lastcur', JSON.stringify({ c: c, at: Date.now() }));
+  }
   function openAdd() {
+    loadHints();
     ensureCats().then(function () {
       var last = LS.get('hanaro.lastacct') || '';
       $('addAcc').innerHTML = '<option value="">Not sure / cash</option>' + state.accounts.map(function (a) { return '<option' + (a === last ? ' selected' : '') + '>' + esc(a) + '</option>'; }).join('');
       ['addAmount', 'addPayee', 'addMemo', 'addNewType'].forEach(function (i) { $(i).value = ''; });
-      $('payeeSug').hidden = true; $('addMsg').textContent = ''; setEntity('Family'); $('addPt').checked = false; setKind('spent');
+      $('payeeSug').hidden = true; $('addMsg').textContent = ''; setEntity('Family'); $('addPt').checked = false; setKind('spent'); (function () { var lc = null; try { lc = JSON.parse(LS.get('hanaro.lastcur') || 'null'); } catch (e) {} setCur(lc && lc.c && Date.now() - lc.at < 3 * 86400000 ? lc.c : 'IDR'); })();
       state.photo = null; $('photoMsg').textContent = ''; $('photoBtn').textContent = 'Take or choose a photo'; locateAdd();
       $('sheetBack').hidden = false; $('sheet').hidden = false; setTimeout(function () { $('addAmount').focus(); }, 50);
     }, function (e) { banner(e.message, true); });
@@ -760,7 +773,7 @@
     $('payeeLabel').textContent = k === 'got' ? 'Received from' : 'Payee';
     $('catLabel').textContent = k === 'held' ? 'What kind of money' : 'Category';
     $('accLabel').textContent = k === 'got' ? 'Received into' : 'Account';
-    $('heldHint').hidden = k !== 'held'; $('entityWrap').hidden = k !== 'spent'; $('ptWrap').hidden = k !== 'spent'; setCat('');
+    $('heldHint').hidden = k !== 'held'; $('entityWrap').hidden = k !== 'spent'; $('ptWrap').hidden = k !== 'spent'; $('fxWrap').hidden = $('addCur').value === 'IDR' || k !== 'spent'; setCat('');
   }
   /* Payee suggestions come from what you entered before; picking one fills the category and account too. */
   function payeeSuggestions(q) {
@@ -771,7 +784,22 @@
       if (!p || seen[key] || key.indexOf(q) === -1) return;
       seen[key] = 1; out.push(t);
     });
-    return out.slice(0, 4);
+    // Then places from your YNAB history and learned rules (loaded in the background, kept on this device).
+    var hs = hints(), hit = [];
+    for (var i = 0; i < hs.length; i++) {
+      var key = String(hs[i].p).toLowerCase();
+      if (seen[key] || key.indexOf(q) === -1) continue;
+      seen[key] = 1; hit.push({ payee: hs[i].p, category: hs[i].c, account: '' });
+      if (hit.length >= 5) break;
+    }
+    return out.concat(hit).slice(0, 6);
+  }
+  function hints() { try { var h = JSON.parse(LS.get('hanaro.hints') || 'null'); return h && h.list ? h.list : []; } catch (e) { return []; } }
+  /** Once a day, in the background: places and usual categories from the YNAB history. */
+  function loadHints() {
+    var h = null; try { h = JSON.parse(LS.get('hanaro.hints') || 'null'); } catch (e) {}
+    if (h && h.at && Date.now() - h.at < 86400000) return;
+    api('payee_hints', {}).then(function (r) { LS.set('hanaro.hints', JSON.stringify({ at: Date.now(), list: r.hints || [] })); }, function () {});
   }
   var sugCache = [];
   $('addPayee').addEventListener('input', function () {
@@ -779,6 +807,7 @@
     var box = $('payeeSug');
     box.innerHTML = sugCache.map(function (t, i) { return '<button type="button" data-sug="' + i + '">' + esc(t.payee) + '</button>'; }).join('');
     box.hidden = !sugCache.length;
+    if (!sugCache.length && !hints().length && $('addPayee').value.trim().length >= 2) { box.innerHTML = '<span class="note">Places from your YNAB history are still loading. Try again in a moment.</span>'; box.hidden = false; }
     box.querySelectorAll('[data-sug]').forEach(function (b) {
       b.addEventListener('click', function () {
         var t = sugCache[Number(b.getAttribute('data-sug'))];
@@ -832,6 +861,8 @@
   $('pickSearch').addEventListener('input', function () { pickList($('pickSearch').value); });
   $('pickBack').addEventListener('click', function () { $('picker').hidden = true; });
   $('addAmount').addEventListener('input', function () { fmtAmt($('addAmount')); });
+  $('addCur').addEventListener('change', function () { setCur($('addCur').value); });
+  $('addIdr').addEventListener('input', function () { fmtAmt($('addIdr')); });
   $('addNewType').addEventListener('input', function () { $('addMsg').textContent = ''; });
   $('addBtn').addEventListener('click', openAdd);
   $('addCancel').addEventListener('click', closeAdd); $('sheetBack').addEventListener('click', closeAdd);
@@ -839,9 +870,10 @@
   $('kindSpent').addEventListener('click', function () { setKind('spent'); }); $('kindGot').addEventListener('click', function () { setKind('got'); });
   $('kindHeld').addEventListener('click', function () { setKind('held'); });
   $('addSave').addEventListener('click', function () {
-    var amt = Number($('addAmount').value.replace(/[^\d]/g, '')), payee = $('addPayee').value.trim(), cat = state.addCat, k = state.kind;
+    var cur = $('addCur').value, foreign = cur !== 'IDR' && state.kind === 'spent', rawAmt = $('addAmount').value;
+    var amt = foreign ? Math.round(parseFloat(rawAmt.replace(',', '.')) * 100) / 100 : Number(rawAmt.replace(/[^\d]/g, '')), typedIdr = foreign ? Number($('addIdr').value.replace(/[^\d]/g, '')) : 0, payee = $('addPayee').value.trim(), cat = state.addCat, k = state.kind;
     var m = $('addMsg'); m.textContent = '';
-    if (!amt) { m.textContent = 'Type the amount as a number.'; return; }
+    if (!amt || isNaN(amt)) { m.textContent = 'Type the amount as a number.'; return; }
     if (!payee) { m.textContent = k === 'got' ? 'Type who it came from.' : 'Type who or what it was for.'; return; }
     if (k === 'spent' && !cat) { m.textContent = 'Choose a category.'; return; }
     if (k === 'held' && !cat) { m.textContent = 'Choose what kind of money this is.'; return; }
@@ -852,7 +884,7 @@
     LS.set('hanaro.lastacct', acct);
     var geo = state.geo, photo = state.photo, entity = k === 'spent' ? (state.entity || 'Family') : '', ptFile = k === 'spent' && $('addPt').checked;
     if (geo && k === 'spent') addPlaces([{ lat: geo.lat, lng: geo.lng, payee: payee, category: cat, account: acct }]);
-    var label = rp(amt) + ' ' + payee;
+    var label = (foreign ? cur + ' ' + amt.toFixed(2) : rp(amt)) + ' ' + payee;
     if (k === 'held' && cat === '__new') {
       cat = 'Held: ' + newName.replace(/^Held:\s*/i, '').trim();
       if (!state.cats.some(function (c) { return c.category === cat; })) state.cats.push({ category: cat, bucket: '', held: true });
@@ -861,15 +893,16 @@
     }
     var now = localIso();
     patch('activity', function (d) {
-      d.items.unshift({ id: 'local_' + Date.now(), date: now.slice(0, 10), timestamp: now, type: kind === 'purchase' ? 'purchase' : kind === 'income' ? 'income' : 'held_in', amount: amt, account: acct, payee: payee, category: kind === 'income' ? 'Income' : cat, bucket: '', status: 'confirmed', memo: memo, entity: entity === 'Business' ? 'Business' : '', ptFile: ptFile, source: 'manual', payNow: false, paid: false, links: '', who: '', cleared: false, receipt: !!photo, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null });
+      d.items.unshift({ id: 'local_' + Date.now(), date: now.slice(0, 10), timestamp: now, type: kind === 'purchase' ? 'purchase' : kind === 'income' ? 'income' : 'held_in', amount: foreign ? (typedIdr || null) : amt, origCurrency: foreign ? cur : '', origAmount: foreign ? amt : null, est: foreign && !typedIdr, account: acct, payee: payee, category: kind === 'income' ? 'Income' : cat, bucket: '', status: 'confirmed', memo: memo, entity: entity === 'Business' ? 'Business' : '', ptFile: ptFile, source: 'manual', payNow: false, paid: false, links: '', who: '', cleared: false, receipt: !!photo, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null });
     });
-    if (kind === 'purchase') patch('home', function (h) {
-      h.spentToday += amt; h.spentWeek += amt; h.spentMonth += amt; h.spentTodayCount += 1;
+    if (kind === 'purchase' && (!foreign || typedIdr)) patch('home', function (h) {
+      var n = foreign ? typedIdr : amt;
+      h.spentToday += n; h.spentWeek += n; h.spentMonth += n; h.spentTodayCount += 1;
       h.avgPerDay = Math.round(h.spentMonth / Math.max(1, Number(now.slice(8, 10))));
     });
     closeAdd(); banner('Saved');
     var c0 = snap(state.view === 'spending' ? 'plan' : state.view); if (c0 && state.view !== 'status' && !editing($('view'))) ({ home: paintHome, review: paintReview, activity: paintActivity, spending: paintSpending })[state.view]($('view'), c0.d);
-    send('add_txn', { kind: kind, amount: amt, payee: payee, category: cat, account: acct, memo: memo, entity: entity, pt_file: ptFile, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null, photo: photo || undefined }, label).then(function (ok) { if (ok && !queue.length) render(); });
+    send('add_txn', { kind: kind, currency: foreign ? cur : 'IDR', idr_amount: typedIdr || undefined, amount: amt, payee: payee, category: cat, account: acct, memo: memo, entity: entity, pt_file: ptFile, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null, photo: photo || undefined }, label).then(function (ok) { if (ok && !queue.length) render(); });
   });
 
   /* ---------- start ---------- */
