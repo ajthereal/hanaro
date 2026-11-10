@@ -598,13 +598,15 @@ function ptFileList_(book, who, req) {
   return { month: month, items: items, total: items.reduce(function (a, i) { return a + i.amount; }, 0), missingReceipts: items.filter(function (i) { return !i.receipt; }).length };
 }
 
-/** Saves a receipt photo to the PT_Receipts folder in Drive and links it to the transaction. */
+/** Saves a receipt photo to PT_Receipts/_Inbox in Drive (the nightly PT filing sorts it from there) and links it to the transaction. */
 function attachPhoto_(book, who, req) {
   var ph = req.photo || req;
   if (!ph.data) throw userError_('The photo did not arrive. Please try again.');
   var f = findTxn_(book, req.id);
-  var it = DriveApp.getFoldersByName('PT_Receipts'), folder = it.hasNext() ? it.next() : DriveApp.createFolder('PT_Receipts');
-  var d = String(f.vals[f.h.indexOf('date')]).slice(0, 10), pay = String(f.vals[f.h.indexOf('payee')] || 'receipt').replace(/[^\w\- ]+/g, '').trim().slice(0, 30);
+  var it = DriveApp.getFoldersByName('PT_Receipts'), root = it.hasNext() ? it.next() : DriveApp.createFolder('PT_Receipts');
+  var sub = root.getFoldersByName('_Inbox'), folder = sub.hasNext() ? sub.next() : root.createFolder('_Inbox');
+  var rawDate = f.vals[f.h.indexOf('date')];
+  var d = (rawDate instanceof Date) ? Utilities.formatDate(rawDate, 'Asia/Jakarta', 'yyyy-MM-dd') : String(rawDate).slice(0, 10), pay = String(f.vals[f.h.indexOf('payee')] || 'receipt').replace(/[^\w\- ]+/g, '').trim().slice(0, 30);
   var name = d + ' ' + pay + ' ' + f.vals[f.h.indexOf('idr_amount')] + '.jpg';
   var file = folder.createFile(Utilities.newBlob(Utilities.base64Decode(ph.data), ph.mime || 'image/jpeg', name));
   setField_(book, who, f, 'receipt_drive_id', file.getId());
