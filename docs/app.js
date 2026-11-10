@@ -8,6 +8,8 @@
   };
   var $ = function (id) { return document.getElementById(id); };
   var state = { pick: { held: false, selected: '', onPick: function () {} }, geo: null, photo: null, token: 0, busy: false, err: false, sync: null, view: 'home', filter: 'all', later: {}, cats: null, accounts: [], kind: 'spent', counts: { review: 0 } };
+  /** Rows the person said are NOT the same place as the rest of a group. Kept on this device so a sync does not undo it. */
+  state.notSame = (function () { try { return JSON.parse(LS.get('hanaro.notsame') || '{}') || {}; } catch (e) { return {}; } })();
 
   /* ---------- helpers ---------- */
   /** Bank emails sometimes leave codes like &#x2F; in names. Turn them back into characters before showing. */
@@ -448,24 +450,31 @@
         tabs.map(function (t) { return '<button class="chip' + (state.filter === t[0] ? ' on' : '') + '" data-f="' + t[0] + '">' + t[1] + ' ' + n[t[0]] + '</button>'; }).join('') + '</div>';
       var shown = items.filter(function (i) { return state.filter === 'all' || i.kind === state.filter; });
       if (!shown.length) html += '<div class="card empty">' + (items.length ? 'Nothing here.' : 'All clear. Nothing needs you right now.') + '</div>';
-      // Bulk helpers so a backlog does not need one tap per item.
+      // The newest transaction always comes first. Bulk helpers never push it down.
       var payNow = shown.filter(function (i) { return i.kind === 'pay_now'; });
-      if (payNow.length >= 2) html += '<div class="card"><span class="tag pay">PAY NOW</span><div class="item-top"><div class="p">' + payNow.length + ' card charges not paid yet</div><div class="a">' + rp(payNow.reduce(function (a, i) { return a + (i.txn.amount || 0); }, 0)) + '</div></div><div class="sub">If you already paid these in myBCA, clear them all at once.</div><div class="btnrow"><button class="primary small" data-bulk="paid">Mark all as paid</button></div></div>';
+      if (payNow.length >= 2 && state.filter === 'pay_now') html += '<div class="card"><span class="tag pay">PAY NOW</span><div class="item-top"><div class="p">' + payNow.length + ' card charges not paid yet</div><div class="a">' + rp(payNow.reduce(function (a, i) { return a + (i.txn.amount || 0); }, 0)) + '</div></div><div class="sub">If you already paid these in myBCA, clear them all at once.</div><div class="btnrow"><button class="primary small" data-bulk="paid">Mark all as paid</button></div></div>';
       var ready = shown.filter(function (i) { return i.kind === 'confirm' && i.txn.category; });
-      if (ready.length >= 2) html += '<div class="card"><span class="tag new">READY</span><div class="item-top"><div class="p">' + ready.length + ' already have a category</div></div><div class="sub">Looks right? Confirm them all in one tap.</div><div class="btnrow"><button class="primary small" data-bulk="ready">Confirm ' + ready.length + '</button></div></div>';
       var groups = {}, order = [];
       shown.forEach(function (i) {
-        if (i.kind === 'confirm' && !i.txn.category) { var k = payeeKey(i.txn.payee); if (k) { if (!groups[k]) { groups[k] = []; order.push(k); } groups[k].push(i); } }
+        if (i.kind === 'confirm' && !i.txn.category && !state.notSame[i.txn.id]) { var k = payeeKey(i.txn.payee); if (k) { if (!groups[k]) { groups[k] = []; order.push(k); } groups[k].push(i); } }
       });
       var grouped = {};
-      order.forEach(function (k) { if (groups[k].length >= 2) { grouped[k] = true; html += groupCard(k, groups[k]); } });
+      order.forEach(function (k) { if (groups[k].length >= 2) grouped[k] = true; });
+      // One timeline. A Same place card sits where its newest charge would be.
+      var blocks = [];
+      function ms(i) { var m = Date.parse(i.txn.timestamp); return isNaN(m) ? 0 : m; }
+      order.forEach(function (k) { if (grouped[k]) blocks.push({ ms: Math.max.apply(null, groups[k].map(ms)), html: groupCard(k, groups[k]) }); });
       shown.forEach(function (i) {
-        if (i.kind === 'pay_now' && payNow.length >= 2 && state.filter === 'all') return;
-        if (i.kind === 'confirm' && !i.txn.category && grouped[payeeKey(i.txn.payee)]) return;
-        html += reviewCard(i);
+        if (i.kind === 'confirm' && !i.txn.category && !state.notSame[i.txn.id] && grouped[payeeKey(i.txn.payee)]) return;
+        blocks.push({ ms: ms(i), html: reviewCard(i) });
       });
+      blocks.forEach(function (b, n) { b.n = n; });
+      blocks.sort(function (a, b) { return b.ms - a.ms || a.n - b.n; });
+      html += blocks.map(function (b) { return b.html; }).join('');
+      if (ready.length >= 2) html += '<div class="card"><span class="tag new">READY</span><div class="item-top"><div class="p">' + ready.length + ' already have a category</div></div><div class="sub">Looks right? Confirm them all in one tap.</div><div class="btnrow"><button class="primary small" data-bulk="ready">Confirm ' + ready.length + '</button></div></div>';
       v.innerHTML = html;
       wirePickBtns(v);
+      v.querySelectorAll('[data-notsame]').forEach(function (b) { b.addEventListener('click', function () { state.notSame[b.getAttribute('data-notsame')] = true; LS.set('hanaro.notsame', JSON.stringify(state.notSame)); repaintReview(v); }); });
       v.querySelectorAll('[data-bulk]').forEach(function (b) { b.addEventListener('click', function () { bulkAction(b, v, shown); }); });
       v.querySelectorAll('[data-group-go]').forEach(function (b) { b.addEventListener('click', function () { groupAction(b, v, groups); }); });
       v.querySelectorAll('[data-f]').forEach(function (b) { b.addEventListener('click', function () { state.filter = b.getAttribute('data-f'); repaintReview(v); }); });
@@ -477,10 +486,10 @@
     var total = list.reduce(function (a, i) { return a + (i.txn.amount || 0); }, 0);
     var same = list.every(function (i) { return i.txn.amount === list[0].txn.amount; });
     var rowsHtml = list.map(function (i) {
-      return '<div class="mrow"><span class="mt">' + esc(when(i.txn.timestamp)) + '<span class="ma">' + esc(i.txn.account) + '</span></span><span class="mv">' + rp(i.txn.amount || 0) + '</span><span class="mk" aria-hidden="true">✓</span></div>';
+      return '<div class="mrow"><span class="mt">' + esc(when(i.txn.timestamp)) + '<span class="ma">' + esc(i.txn.account) + '</span></span><span class="mv">' + rp(i.txn.amount || 0) + '</span><button type="button" class="ns" data-notsame="' + esc(i.txn.id) + '">Not here</button><span class="mk" aria-hidden="true">✓</span></div>';
     }).join('');
     return '<div class="card" data-group="' + esc(k) + '"><span class="tag new">SAME PLACE</span><div class="item-top"><div class="p">' + esc(list[0].txn.payee) + ' · ' + list.length + ' times</div><div class="a">' + rp(total) + '</div></div>' +
-      '<div class="sub">' + (same ? 'Same amount each time.' : 'Different amounts.') + ' Check them, then pick one category for all. Hanaro remembers it for next time.</div>' +
+      '<div class="sub">' + (same ? 'Same amount each time.' : 'Different amounts.') + ' Check them, then pick one category for all. Hanaro remembers it for next time. Tap Not here on any charge that was somewhere else.</div>' +
       '<div class="mlist">' + rowsHtml + '</div>' +
       catBtn('', ' data-group-cat') + '<p class="err" data-err></p>' +
       '<div class="btnrow"><button class="primary small" data-group-go="' + esc(k) + '">Confirm all ' + list.length + '</button></div></div>';

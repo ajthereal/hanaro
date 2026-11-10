@@ -176,6 +176,8 @@ nav button:not(.on) .lb{display:none}
 .mrow .mv{font-weight:600;white-space:nowrap}
 .mrow .mk{width:22px;height:22px;border-radius:11px;background:#DDF5EA;color:var(--good);font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;opacity:0;transform:scale(.3);transition:opacity .2s,transform .3s cubic-bezier(.3,1.6,.5,1)}
 .mrow.ok .mk{opacity:1;transform:scale(1)}
+.mrow .ns{border:1px solid #C9DCDC;background:#fff;color:var(--muted);border-radius:999px;padding:5px 10px;font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}
+.mrow.ok .ns,.card.done .mrow .ns{display:none}
 .card{transition:background-color .25s,max-height .45s ease,margin .45s ease,padding .45s ease,opacity .35s ease,transform .45s ease;overflow:hidden}
 .card.done{background-color:#E6F7EE}
 .card.leaving{opacity:0;transform:translateX(48px) scale(.97);margin-top:0;margin-bottom:0;padding-top:0;padding-bottom:0}
