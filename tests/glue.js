@@ -29,7 +29,11 @@ const sb = {
   },
   SpreadsheetApp: { openById: () => sb.__book },
   LockService: { getScriptLock: () => ({ tryLock: () => true, waitLock: () => {}, releaseLock: () => {} }) },
-  DriveApp: { getFoldersByName: () => ({ hasNext: () => true, next: () => ({ createFile: (b) => { files.push(b); return { getId: () => 'file_' + files.length }; } }) }) }
+  DriveApp: { getFoldersByName: () => ({ hasNext: () => true, next: () => {
+    const put = (where) => (b) => { b.folder = where; files.push(b); return { getId: () => 'file_' + files.length }; };
+    const inbox = { createFile: put('_Inbox') };
+    return { createFile: put('PT_Receipts'), getFoldersByName: (n) => ({ hasNext: () => n === '_Inbox', next: () => inbox }), createFolder: () => inbox };
+  } }) }
 };
 vm.createContext(sb);
 ['Logic.gs', 'Api.gs'].forEach((f) => vm.runInContext(fs.readFileSync(path.join(__dirname, '../apps-script/api', f), 'utf8'), sb, { filename: f }));
@@ -63,6 +67,7 @@ eq('email row kept and enriched', [col(em, 'status'), col(em, 'category'), col(e
 eq('typed row voided, not deleted', [col(mn, 'status'), /Merged with bank email e1/.test(col(mn, 'memo'))], ['void', true]);
 eq('location and receipt carried over', [col(em, 'lat'), col(em, 'lng'), col(em, 'receipt_drive_id')], [-6.2, 106.8, 'file_1']);
 eq('receipt saved to Drive with a plain name', [files.length, /Greek yoghurt 214830\.jpg$/.test(files[0].name)], [1, true]);
+eq('receipt lands in the _Inbox folder', files[0].folder, '_Inbox');
 eq('category learned from the bank name', sb.__book.data.Rules.slice(1).map((r) => [r[2], r[3], r[5]]), [['sir greek', 'Eating out', 'N']]);
 eq('every change is in the Audit tab', sb.__book.data.Audit.length > 8, true);
 eq('running the match again changes nothing', run("reconcile_(book_(), 'system')"), 0);
