@@ -74,12 +74,17 @@
     <button id="catBtn" class="field fbtn" type="button"><span class="fl" id="catLabel">Category</span><span class="fv" id="catVal">Choose</span><span class="chev" aria-hidden="true">›</span></button>
     <div id="newTypeWrap" class="field" hidden><label for="addNewType">Name of the new kind</label><input id="addNewType" autocomplete="off" placeholder="For example, Seminar fees"></div>
     <p id="heldHint" class="note" hidden>Money someone gave you to pass on. It is not your income and not counted as spending.</p>
-    <div class="field"><label for="addAcc" id="accLabel">Account</label><select id="addAcc"></select></div>
+    <button id="accBtn" class="field fbtn" type="button"><span class="fl" id="accLabel">Account</span><span class="fv" id="accVal">Not sure / cash</span><span class="chev" aria-hidden="true">›</span></button>
+    <select id="addAcc" hidden></select>
+    <div class="field" id="dateWrap"><label for="addDate">Date</label><input id="addDate" type="date"></div>
     <div class="field" id="fxWrap" hidden><label for="addIdr">Rupiah charged (optional)</label><input id="addIdr" inputmode="numeric" autocomplete="off" placeholder="Leave empty to use the current rate"><span class="note">The real amount from the bank email replaces the estimate later.</span></div>
-    <div class="field" id="entityWrap"><span class="fl">This spending is</span><div class="seg" id="entitySeg"><button type="button" id="entFam" class="on">Family</button><button type="button" id="entBiz">Business</button></div></div>
-    <div class="field" id="ptWrap"><label class="chk" for="addPt"><input type="checkbox" id="addPt"> File for PT AHU</label><span class="note">Also counts as company spending. Your receipt photo goes to the PT_Receipts folder.</span></div>
-    <div class="field"><label for="addMemo">Memo (optional)</label><input id="addMemo" autocomplete="off"></div>
-    <div class="field"><span class="fl">Receipt photo (optional, saved to PT_Receipts)</span><button id="photoBtn" class="link" type="button">Take or choose a photo</button><input id="photoIn" type="file" accept="image/*" hidden><span id="photoMsg" class="note"></span></div>
+    <button id="moreBtn" class="field fbtn" type="button"><span class="fl">More</span><span class="fv" id="moreVal">Family or business, PT AHU, memo, photo</span><span class="chev" id="moreChev" aria-hidden="true">›</span></button>
+    <div id="moreWrap" hidden>
+      <div class="field" id="entityWrap"><span class="fl">This spending is</span><div class="seg" id="entitySeg"><button type="button" id="entFam" class="on">Family</button><button type="button" id="entBiz">Business</button></div></div>
+      <div class="field" id="ptWrap"><label class="chk" for="addPt"><input type="checkbox" id="addPt"> File for PT AHU</label><span class="note">Also counts as company spending. Your receipt photo goes to the PT_Receipts folder.</span></div>
+      <div class="field"><label for="addMemo">Memo (optional)</label><input id="addMemo" autocomplete="off"></div>
+      <div class="field"><span class="fl">Receipt photo (optional, saved to PT_Receipts)</span><button id="photoBtn" class="link" type="button">Take or choose a photo</button><input id="photoIn" type="file" accept="image/*" hidden><span id="photoMsg" class="note"></span></div>
+    </div>
   </div>
   <p id="addMsg" class="err" role="alert"></p>
   <button id="addSave" class="primary savefab">Save</button>
@@ -91,6 +96,22 @@
   <div id="pickList"></div>
 </section>
 
+
+<section id="txnEdit" hidden role="dialog" aria-modal="true" aria-label="Transaction">
+  <div class="pickhead"><button id="teBack" class="roundx" aria-label="Back"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button><div class="pickttl">Transaction</div></div>
+  <div class="te-amt" id="teAmt"></div>
+  <div class="te-sub" id="teSub"></div>
+  <div class="fields" style="margin:0">
+    <div class="field"><label for="tePayee">Payee</label><input id="tePayee" autocomplete="off" autocapitalize="words"></div>
+    <button id="teCat" class="field fbtn" type="button"><span class="fl">Category</span><span class="fv" id="teCatVal">Choose</span><span class="chev" aria-hidden="true">›</span></button>
+    <div class="field"><span class="fl">This spending is</span><div class="seg"><button type="button" id="teFam" class="on">Family</button><button type="button" id="teBiz">Business</button></div></div>
+    <div class="field"><label class="chk" for="tePt"><input type="checkbox" id="tePt"> File for PT AHU</label></div>
+    <div class="field"><label for="teMemo">Memo</label><input id="teMemo" autocomplete="off"></div>
+    <div class="field"><span class="fl">Receipt photo</span><button id="tePhoto" class="link" type="button">Add receipt photo</button><input id="tePhotoIn" type="file" accept="image/*" hidden></div>
+  </div>
+  <p id="teMsg" class="err" role="alert"></p>
+  <button id="teSave" class="primary" style="margin-top:8px">Save</button>
+</section>
 
 <section id="planEdit" hidden role="dialog" aria-modal="true" aria-label="Plan item">
   <div class="pickhead"><button id="planBack" class="roundx" aria-label="Back"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button><div class="pickttl" id="planTitle">Plan item</div></div>

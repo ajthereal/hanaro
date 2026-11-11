@@ -117,7 +117,7 @@
     })().then(function (ok) { flushing = null; return ok; });
     return flushing;
   }
-  function useCats(c) { state.cats = c.categories; state.accounts = c.accounts; }
+  function useCats(c) { state.cats = c.categories; state.accounts = c.accounts; state.apiV = c.apiV || 1; }
   function setWho(u) { if (u) { $('whoName').textContent = u.name; $('avatar').textContent = u.name.slice(0, 2).toUpperCase(); } }
   /** One request brings Home, Review, Activity and the category list. */
   function refresh() {
@@ -431,7 +431,7 @@
   function wirePickBtns(root) {
     root.querySelectorAll('[data-pickbtn]').forEach(function (b) {
       b.addEventListener('click', function () {
-        openPicker({ held: false, both: true, selected: b.getAttribute('data-val'), title: 'Category', noNew: true, onPick: function (name) {
+        openPicker({ held: false, both: true, selected: b.getAttribute('data-val'), title: 'Category', noNew: true, payee: (function () { var pp = b.closest('.card').querySelector('.p'); return pp ? pp.textContent : ''; })(), onPick: function (name) {
           b.setAttribute('data-val', name);
           var fv = b.querySelector('.fv'); fv.textContent = name; fv.className = 'fv';
           var er = b.closest('.card').querySelector('[data-err]'); if (er) er.textContent = '';
@@ -628,69 +628,145 @@
   }
 
   /* ---------- Activity ---------- */
-  /** Business or family, and filed for PT AHU: two small switches on each purchase. */
-  function tagBtns(t) {
-    if (t.type !== 'purchase' || String(t.id).indexOf('local_') === 0) return '';
-    var biz = t.entity === 'Business';
-    return '<div><button class="link rc" data-ent="' + esc(t.id) + '" data-to="' + (biz ? 'Family' : 'Business') + '">' + (biz ? 'Business · Mark as family' : 'Mark as business') + '</button> ' +
-      '<button class="link rc" data-pt="' + esc(t.id) + '" data-to="' + (t.ptFile ? '' : 'Y') + '">' + (t.ptFile ? 'Filed for PT AHU ✓ · Undo' : 'File for PT AHU') + '</button></div>';
+  var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  /** Date band above each day, for example "Today · November 11, 2026". */
+  function bandLabel(iso) {
+    var t = localIso().slice(0, 10), d = new Date(t + 'T12:00:00'); d.setDate(d.getDate() - 1);
+    var z = function (n) { return (n < 10 ? '0' : '') + n; }, yest = d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate());
+    var full = MONTHS[Number(iso.slice(5, 7)) - 1] + ' ' + Number(iso.slice(8, 10)) + ', ' + iso.slice(0, 4);
+    return iso === t ? 'Today · ' + full : iso === yest ? 'Yesterday · ' + full : full;
+  }
+  /** What the grey pill under the payee says. */
+  function actPill(t) {
+    if (t.type === 'payment') return '<span class="cpill blue">Card payment</span>';
+    if (t.type === 'transfer') return '<span class="cpill">Transfer</span>';
+    if (t.type === 'income') return '<span class="cpill green">Income</span>';
+    if (t.type === 'held_in') return '<span class="cpill">Held for others</span>';
+    if (t.type === 'held_out') return '<span class="cpill">Passed on</span>';
+    return t.category ? '<span class="cpill">' + esc(t.category.replace(/^Held:\s*/, 'Held: ')) + '</span>' : '<span class="cpill none">No category yet</span>';
+  }
+  function actTags(t) {
+    var h = '';
+    if (t.status === 'needs_review') h += '<span class="tag unread">UNREAD</span>';
+    else if (t.status === 'possible_duplicate') h += '<span class="tag dup">DUPLICATE?</span>';
+    else if (t.payNow && t.paid) h += '<span class="tag paid">PAID</span>';
+    else if (t.payNow) h += '<span class="tag pay">PAY NOW</span>';
+    if (t.entity === 'Business') h += '<span class="tag by-business">BUSINESS</span>';
+    if (t.ptFile) h += '<span class="tag gray">PT AHU</span>';
+    return h;
+  }
+  function actRow(t) {
+    var plus = t.type === 'income' || t.type === 'held_in', edit = t.type === 'purchase';
+    var amt = t.amount === null ? '–' : (plus ? '+' : '−') + rp(t.amount);
+    var fx = t.origCurrency && t.origCurrency !== 'IDR' && t.origAmount !== null ? '<div class="ac">' + esc(t.origCurrency) + ' ' + Number(t.origAmount).toFixed(2) + (t.est ? ' · est.' : '') + '</div>' : '';
+    var inner = '<div class="al"><div class="ap">' + esc(t.payee || '(no name)') + '</div><div class="achips">' + actPill(t) + actTags(t) + '</div></div>' +
+      '<div class="ar"><div class="aa' + (plus ? ' plus' : '') + '">' + amt + (t.cleared ? '<span class="clr" title="Confirmed by the bank email">✓</span>' : '') + '</div>' +
+      '<div class="ac">' + esc(t.account || 'No account') + (t.by ? ' · ' + esc(t.by) : '') + '</div>' + fx + '</div>';
+    return edit ? '<button type="button" class="arow" data-edit="' + esc(t.id) + '">' + inner + '</button>' : '<div class="arow">' + inner + '</div>';
+  }
+  function fillActList(v, d) {
+    var q = (state.actQ || '').toLowerCase().trim(), fsel = state.actFilter || 'All';
+    var items = d.items.filter(function (t) {
+      if (fsel !== 'All' && t.by !== fsel) return false;
+      if (q && [t.payee, t.category, t.account, t.memo, t.by].join(' ').toLowerCase().indexOf(q) === -1) return false;
+      return true;
+    }).sort(function (a, b) { return String(b.date).localeCompare(String(a.date)) || String(b.timestamp).localeCompare(String(a.timestamp)); });
+    var html = '';
+    if (!items.length) html = '<div class="card empty">' + (q ? 'Nothing matches "' + esc(state.actQ) + '".' : d.items.length ? 'Nothing for ' + fsel + ' in the latest transactions.' : 'Nothing yet.') + '</div>';
+    else {
+      var last = '';
+      html = '<div class="acard">';
+      items.forEach(function (t) {
+        if (t.date !== last) { html += '<div class="dband">' + esc(bandLabel(t.date)) + '</div>'; last = t.date; }
+        html += actRow(t);
+      });
+      html += '</div>';
+    }
+    $('actList').innerHTML = html;
+    $('actList').querySelectorAll('[data-edit]').forEach(function (b) { b.addEventListener('click', function () { openTxnEdit(b.getAttribute('data-edit')); }); });
   }
   function paintActivity(v, d) {
-    (function () {
-      var html = '<div style="' + TITLE + '">Activity</div>';
-      var FILTERS = ['All', 'AJ', 'Cynthia', 'Business'], fsel = state.actFilter || 'All';
-      html += '<div class="chips">' + FILTERS.map(function (f) { return '<button class="chip' + (f === fsel ? ' on' : '') + '" data-actf="' + f + '">' + f + '</button>'; }).join('') + '</div>';
-      var items = d.items.filter(function (t) { return fsel === 'All' || t.by === fsel; });
-      if (!items.length) html += '<div class="card empty">' + (d.items.length ? 'Nothing for ' + fsel + ' in the latest transactions.' : 'Nothing yet.') + '</div>';
-      var last = '', open = false;
-      items.forEach(function (t) {
-        if (t.date !== last) { if (open) html += '</div>'; html += '<div class="day">' + dayLabel(t.date).toUpperCase() + '</div><div class="card" style="padding:6px 18px">'; open = true; last = t.date; }
-        var tag = '';
-        if (t.status === 'needs_review') tag = '<span class="tag unread">UNREAD</span>';
-        else if (t.status === 'possible_duplicate') tag = '<span class="tag dup">DUPLICATE?</span>';
-        else if (t.payNow && t.paid) tag = '<span class="tag paid">PAID</span>';
-        else if (t.payNow) tag = '<span class="tag pay">PAY NOW</span>';
-        else if (t.type === 'payment') tag = '<span class="tag gray">CARD PAYMENT</span>';
-        else if (t.type === 'transfer') tag = '<span class="tag gray">TRANSFER</span>';
-        else if (t.type === 'income') tag = '<span class="tag paid">RECEIVED</span>';
-        else if (t.type === 'held_in') tag = '<span class="tag new">HELD FOR OTHERS</span>';
-        else if (t.type === 'held_out') tag = '<span class="tag new">PASSED ON</span>';
-        var byTag = t.by ? '<span class="tag by-' + t.by.toLowerCase() + '">' + esc(t.by.toUpperCase()) + '</span> ' : '';
-        var hhmm = String(t.timestamp || '').slice(11, 16);
-        html += '<div class="act"><div class="l"><div class="p">' + esc(t.payee || '(no name)') + '</div><div class="sub">' + (hhmm ? hhmm + ' · ' : '') + esc(t.category || (t.type === 'payment' ? 'Paid to your card' : t.type === 'transfer' ? 'Sent to someone' : 'No category yet')) + ' · ' + esc(t.account) + '</div>' + '<div style="margin-top:4px">' + byTag + tag + '</div>' + (t.type === 'purchase' && String(t.id).indexOf('local_') !== 0 ? '<button class="link rc" data-photo="' + esc(t.id) + '">' + (t.receipt ? 'Receipt saved ✓ · Replace' : 'Add receipt photo') + '</button>' : '') + tagBtns(t) + '</div><div class="r">' + (t.amount === null ? '–' : (t.type === 'income' || t.type === 'held_in' ? '+' : '') + rp(t.amount)) + (t.cleared ? '<span class="clr" title="Confirmed by the bank email">✓</span>' : '') + (t.origCurrency && t.origCurrency !== 'IDR' && t.origAmount !== null ? '<div class="sub">' + esc(t.origCurrency) + ' ' + Number(t.origAmount).toFixed(2) + (t.est ? ' · est.' : '') + '</div>' : '') + '</div></div>';
-      });
-      if (open) html += '</div>';
-      v.innerHTML = html;
-      v.querySelectorAll('[data-actf]').forEach(function (b) { b.addEventListener('click', function () { state.actFilter = b.getAttribute('data-actf'); paintActivity(v, d); }); });
-      v.querySelectorAll('[data-ent],[data-pt]').forEach(function (b) {
-        b.addEventListener('click', function () {
-          var isEnt = b.hasAttribute('data-ent'), id = b.getAttribute(isEnt ? 'data-ent' : 'data-pt'), to = b.getAttribute('data-to');
-          patch('activity', function (x) { x.items.forEach(function (t) { if (t.id === id) { if (isEnt) t.entity = to; else t.ptFile = to === 'Y'; } }); });
-          var c = snap('activity'); if (c) paintActivity(v, c.d);
-          banner('Saved');
-          var ch = {}; ch[isEnt ? 'entity' : 'pt_file'] = to;
-          send('update_txn', { id: id, changes: ch }, isEnt ? 'business or family' : 'file for PT AHU').then(function (ok) { if (ok && !queue.length) render(); });
-        });
-      });
-      v.querySelectorAll('[data-photo]').forEach(function (b) {
-        b.addEventListener('click', function () {
-          var id = b.getAttribute('data-photo'), inp = document.createElement('input');
-          inp.type = 'file'; inp.accept = 'image/*';
-          inp.addEventListener('change', function () {
-            if (!inp.files[0]) return;
-            b.textContent = 'Preparing…';
-            compress(inp.files[0]).then(function (ph) {
-              patch('activity', function (d) { d.items.forEach(function (t) { if (t.id === id) t.receipt = true; }); });
-              banner('Saved');
-              send('attach_photo', { id: id, photo: ph }, 'the receipt photo').then(function (ok) { if (ok && !queue.length) render(); });
-              var c = snap('activity'); if (c) paintActivity(v, c.d);
-            }, function (e) { b.textContent = 'Add receipt photo'; banner(e.message, true); });
-          });
-          inp.click();
-        });
-      });
-    })();
+    var FILTERS = ['All', 'AJ', 'Cynthia', 'Business'], fsel = state.actFilter || 'All', n = state.counts.review || 0;
+    var html = '<div class="acthead"><div style="' + TITLE + '">Activity</div><button type="button" id="actSearchBtn" class="roundx" aria-label="Search"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></button></div>';
+    if (state.actSearchOn) html += '<input id="actQ" type="search" placeholder="Search payee, category or account" autocomplete="off" value="' + esc(state.actQ || '') + '">';
+    if (n) html += '<div class="inbox"><span class="cnt">' + n + '</span><span class="it">New transactions</span><button type="button" class="rv" data-go-review>Review</button></div>';
+    html += '<div class="chips">' + FILTERS.map(function (f) { return '<button class="chip' + (f === fsel ? ' on' : '') + '" data-actf="' + f + '">' + f + '</button>'; }).join('') + '</div><div id="actList"></div>';
+    v.innerHTML = html;
+    fillActList(v, d);
+    v.querySelectorAll('[data-actf]').forEach(function (b) { b.addEventListener('click', function () { state.actFilter = b.getAttribute('data-actf'); paintActivity(v, d); }); });
+    v.querySelectorAll('[data-go-review]').forEach(function (b) { b.addEventListener('click', function () { go('review'); }); });
+    $('actSearchBtn').addEventListener('click', function () {
+      state.actSearchOn = !state.actSearchOn; if (!state.actSearchOn) state.actQ = '';
+      paintActivity(v, d); if (state.actSearchOn && $('actQ')) $('actQ').focus();
+    });
+    if ($('actQ')) $('actQ').addEventListener('input', function () { state.actQ = $('actQ').value; fillActList(v, d); });
   }
+
+  /* ---------- Open one purchase: change category, Family or Business, PT AHU, memo, receipt ---------- */
+  var te = { t: null, cat: '', ent: 'Family', entTouched: false, photo: null };
+  function setTeCat(name) { te.cat = name || ''; var el = $('teCatVal'); el.textContent = name ? name.replace(/^Held:\s*/, 'Held: ') : 'Choose'; el.className = 'fv' + (name ? '' : ' empty'); }
+  function setTeEnt(e) { te.ent = e; $('teFam').className = e === 'Family' ? 'on' : ''; $('teBiz').className = e === 'Business' ? 'on' : ''; }
+  function openTxnEdit(id) {
+    var c = snap('activity'), t = c && c.d.items.filter(function (x) { return x.id === id; })[0];
+    if (!t) return;
+    if (String(t.id).indexOf('local_') === 0) { banner('This one is still being sent. Open it again in a moment.'); return; }
+    te = { t: t, cat: t.category || '', ent: t.entity === 'Business' ? 'Business' : 'Family', entTouched: false, photo: null };
+    $('teAmt').textContent = t.amount === null ? '–' : rp(t.amount);
+    $('teSub').textContent = bandLabel(t.date) + ' · ' + (t.account || 'No account') + (t.origCurrency && t.origCurrency !== 'IDR' && t.origAmount !== null ? ' · ' + t.origCurrency + ' ' + Number(t.origAmount).toFixed(2) : '');
+    $('tePayee').value = t.payee || ''; $('teMemo').value = t.memo || '';
+    setTeCat(te.cat); setTeEnt(te.ent); $('tePt').checked = !!t.ptFile;
+    $('tePhoto').textContent = t.receipt ? 'Receipt saved ✓ · Replace' : 'Add receipt photo'; $('teMsg').textContent = '';
+    $('txnEdit').hidden = false; $('txnEdit').scrollTop = 0;
+  }
+  $('teBack').addEventListener('click', function () { $('txnEdit').hidden = true; });
+  $('teFam').addEventListener('click', function () { te.entTouched = true; setTeEnt('Family'); });
+  $('teBiz').addEventListener('click', function () { te.entTouched = true; setTeEnt('Business'); });
+  $('teCat').addEventListener('click', function () {
+    ensureCats().then(function () {
+      openPicker({ held: false, selected: te.cat, title: 'Category', noNew: true, payee: $('tePayee').value, onPick: function (name) { setTeCat(name); } });
+    }, function (e) { banner(e.message, true); });
+  });
+  $('tePhoto').addEventListener('click', function () { $('tePhotoIn').click(); });
+  $('tePhotoIn').addEventListener('change', function () {
+    var f = $('tePhotoIn').files[0]; if (!f) return;
+    $('tePhoto').textContent = 'Preparing…';
+    compress(f).then(function (ph) { te.photo = ph; $('tePhoto').textContent = 'Photo ready ✓ · Replace'; }, function (e) { te.photo = null; $('tePhoto').textContent = 'Add receipt photo'; $('teMsg').textContent = e.message; });
+    $('tePhotoIn').value = '';
+  });
+  $('teSave').addEventListener('click', function () {
+    var t = te.t; if (!t) return;
+    var payee = $('tePayee').value.trim(), memo = $('teMemo').value.trim(), pt = $('tePt').checked, ch = {};
+    if (!payee) { $('teMsg').textContent = 'Type who or what it was for.'; return; }
+    if (payee !== (t.payee || '')) ch.payee = payee;
+    if (te.cat && te.cat !== (t.category || '')) ch.category = te.cat;
+    if (memo !== (t.memo || '')) ch.memo = memo;
+    if (te.entTouched && te.ent !== (t.entity === 'Business' ? 'Business' : (t.entity || 'Family'))) ch.entity = te.ent;
+    if (pt !== !!t.ptFile) ch.pt_file = pt ? 'Y' : '';
+    // Saving a new transaction that has a category also confirms it, so it leaves Review.
+    var confirm = t.status === 'auto' && !!te.cat, photo = te.photo, id = t.id;
+    if (!Object.keys(ch).length && !confirm && !photo) { $('txnEdit').hidden = true; return; }
+    patch('activity', function (d) {
+      d.items.forEach(function (x) {
+        if (x.id !== id) return;
+        if (ch.payee !== undefined) x.payee = ch.payee;
+        if (ch.category !== undefined) x.category = ch.category;
+        if (ch.memo !== undefined) x.memo = ch.memo;
+        if (ch.entity !== undefined) x.entity = ch.entity;
+        if (ch.pt_file !== undefined) x.ptFile = ch.pt_file === 'Y';
+        if (confirm) x.status = 'confirmed';
+        if (photo) x.receipt = true;
+      });
+    });
+    if (confirm) {
+      patch('review', function (d) { d.items = d.items.filter(function (i) { return i.txn.id !== id; }); });
+      patch('home', function (h) { h.reviewCount = Math.max(0, h.reviewCount - 1); });
+      state.counts.review = Math.max(0, (state.counts.review || 0) - 1); renderNav();
+    }
+    $('txnEdit').hidden = true; banner('Saved');
+    var c2 = snap('activity'); if (c2 && state.view === 'activity') paintActivity($('view'), c2.d);
+    if (Object.keys(ch).length || confirm) send('update_txn', { id: id, changes: ch, confirm: confirm || undefined }, 'the changes to ' + payee).then(function (ok) { if (ok && !queue.length) render(); });
+    if (photo) send('attach_photo', { id: id, photo: photo }, 'the receipt photo').then(function (ok) { if (ok && !queue.length) render(); });
+  });
 
   /* ---------- Status ---------- */
   function renderStatus(v, tok) {
@@ -801,6 +877,23 @@
     else if (name === '__new') { el.textContent = 'A new kind…'; el.className = 'fv'; }
     else { el.textContent = name; el.className = 'fv'; }
     $('newTypeWrap').hidden = name !== '__new';
+    // Operational categories are business costs, so the spending is marked Business unless it was set by hand.
+    if (state.kind === 'spent' && !state.entityTouched) setEntity(isOperational(name) ? 'Business' : 'Family');
+    updateMore();
+  }
+  function isOperational(name) {
+    if (!name) return false;
+    var c = (state.cats || []).filter(function (x) { return x.category === name; })[0];
+    return /operational/i.test(name) || !!(c && /operational/i.test(c.bucket || ''));
+  }
+  function setAcc(v) { $('addAcc').value = v; $('accVal').textContent = $('addAcc').value || 'Not sure / cash'; }
+  /** One line under More that says what is set inside it. */
+  function updateMore() {
+    var bits = [];
+    if (state.kind === 'spent') { bits.push(state.entity === 'Business' ? 'Business' : 'Family'); if ($('addPt').checked) bits.push('PT AHU'); }
+    if ($('addMemo').value.trim()) bits.push('Memo');
+    if (state.photo) bits.push('Photo');
+    $('moreVal').textContent = bits.length ? bits.join(' · ') : 'Memo, photo';
   }
   function fmtAmt(el) {
     if (el.id === 'addAmount' && $('addCur').value !== 'IDR') {
@@ -823,10 +916,11 @@
     ensureCats().then(function () {
       var last = LS.get('hanaro.lastacct') || '';
       $('addAcc').innerHTML = '<option value="">Not sure / cash</option>' + state.accounts.map(function (a) { return '<option' + (a === last ? ' selected' : '') + '>' + esc(a) + '</option>'; }).join('');
+      setAcc(state.accounts.indexOf(last) !== -1 ? last : '');
       ['addAmount', 'addPayee', 'addMemo', 'addNewType'].forEach(function (i) { $(i).value = ''; });
-      $('payeeSug').hidden = true; $('addMsg').textContent = ''; setEntity('Family'); $('addPt').checked = false; setKind('spent'); (function () { var lc = null; try { lc = JSON.parse(LS.get('hanaro.lastcur') || 'null'); } catch (e) {} setCur(lc && lc.c && Date.now() - lc.at < 3 * 86400000 ? lc.c : 'IDR'); })();
+      state.entityTouched = false; $('moreWrap').hidden = true; $('moreChev').className = 'chev'; (function () { var td = localIso().slice(0, 10); $('addDate').value = td; $('addDate').max = td; })(); $('payeeSug').hidden = true; $('addMsg').textContent = ''; setEntity('Family'); $('addPt').checked = false; setKind('spent'); (function () { var lc = null; try { lc = JSON.parse(LS.get('hanaro.lastcur') || 'null'); } catch (e) {} setCur(lc && lc.c && Date.now() - lc.at < 3 * 86400000 ? lc.c : 'IDR'); })();
       state.photo = null; $('photoMsg').textContent = ''; $('photoBtn').textContent = 'Take or choose a photo'; locateAdd();
-      $('sheetBack').hidden = false; $('sheet').hidden = false; setTimeout(function () { $('addAmount').focus(); }, 50);
+      $('sheetBack').hidden = false; $('sheet').hidden = false; showFavs(); updateMore(); setTimeout(function () { $('addAmount').focus(); }, 50);
     }, function (e) { banner(e.message, true); });
   }
   /* Location: suggests payee, category and account from the nearest earlier purchase (within 150 m). */
@@ -841,7 +935,7 @@
       if (!best) return;
       $('addPayee').value = best.payee;
       if (best.category && kindRows().some(function (c) { return c.category === best.category; })) setCat(best.category);
-      if (best.account && state.accounts.indexOf(best.account) !== -1) $('addAcc').value = best.account;
+      if (best.account && state.accounts.indexOf(best.account) !== -1) setAcc(best.account);
       state.geoApplied = true; $('geoText').textContent = 'Suggested from your location.'; $('geoNote').hidden = false;
     }, function (err) {
       if (err && err.code === 1) { $('geoText').textContent = 'Location is off for Hanaro, so there are no place suggestions. You can allow it in Settings.'; $('geoClear').hidden = true; $('geoNote').hidden = false; }
@@ -852,11 +946,11 @@
   $('photoIn').addEventListener('change', function () {
     var f = $('photoIn').files[0]; if (!f) return;
     $('photoMsg').textContent = 'Preparing photo…';
-    compress(f).then(function (ph) { state.photo = ph; $('photoMsg').textContent = 'Photo added ✓'; $('photoBtn').textContent = 'Change photo'; }, function (e) { state.photo = null; $('photoMsg').textContent = e.message; });
+    compress(f).then(function (ph) { state.photo = ph; $('photoMsg').textContent = 'Photo added ✓'; $('photoBtn').textContent = 'Change photo'; updateMore(); }, function (e) { state.photo = null; $('photoMsg').textContent = e.message; });
     $('photoIn').value = '';
   });
   function closeAdd() { $('sheet').hidden = true; $('sheetBack').hidden = true; $('picker').hidden = true; }
-  function setEntity(e) { state.entity = e; $('entFam').className = e === 'Family' ? 'on' : ''; $('entBiz').className = e === 'Business' ? 'on' : ''; }
+  function setEntity(e) { state.entity = e; $('entFam').className = e === 'Family' ? 'on' : ''; $('entBiz').className = e === 'Business' ? 'on' : ''; updateMore(); }
   function setKind(k) {
     state.kind = k;
     ['Spent:spent', 'Got:got', 'Held:held'].forEach(function (x) { var p = x.split(':'); $('kind' + p[0]).className = k === p[1] ? 'on' : ''; });
@@ -869,7 +963,7 @@
   /* Payee suggestions come from what you entered before; picking one fills the category and account too. */
   function payeeSuggestions(q) {
     q = q.toLowerCase().trim(); var seen = {}, out = [];
-    if (q.length < 2) return out;
+    if (q.length < 1) return out;
     recentTxns().forEach(function (t) {
       var p = String(t.payee || ''), key = p.toLowerCase();
       if (!p || seen[key] || key.indexOf(q) === -1) return;
@@ -893,36 +987,88 @@
     api('payee_hints', {}).then(function (r) { LS.set('hanaro.hints', JSON.stringify({ at: Date.now(), list: r.hints || [] })); }, function () {});
   }
   var sugCache = [];
-  $('addPayee').addEventListener('input', function () {
-    sugCache = payeeSuggestions($('addPayee').value);
-    var box = $('payeeSug');
-    box.innerHTML = sugCache.map(function (t, i) { return '<button type="button" data-sug="' + i + '">' + esc(t.payee) + '</button>'; }).join('');
-    box.hidden = !sugCache.length;
-    if (!sugCache.length && !hints().length && $('addPayee').value.trim().length >= 2) { box.innerHTML = '<span class="note">Places from your YNAB history are still loading. Try again in a moment.</span>'; box.hidden = false; }
+  /** The payees used most in the latest transactions, shown before anything is typed. One tap fills payee, category and account. */
+  function favPayees() {
+    var type = { spent: 'purchase', got: 'income', held: 'held_in' }[state.kind], count = {}, last = {}, order = [];
+    recentTxns().forEach(function (t) {
+      var p = String(t.payee || '').trim(); if (!p || t.type !== type) return;
+      var k = p.toLowerCase();
+      if (!count[k]) { count[k] = 0; last[k] = t; order.push(k); }
+      count[k]++;
+    });
+    var rank = {}; order.forEach(function (k, i) { rank[k] = i; });
+    order.sort(function (x, y) { return count[y] - count[x] || rank[x] - rank[y]; });
+    return order.slice(0, 6).map(function (k) { return last[k]; });
+  }
+  function renderSug(list) {
+    sugCache = list; var box = $('payeeSug');
+    box.innerHTML = list.map(function (t, i) { return '<button type="button" data-sug="' + i + '">' + esc(t.payee) + '</button>'; }).join('');
+    box.hidden = !list.length;
     box.querySelectorAll('[data-sug]').forEach(function (b) {
       b.addEventListener('click', function () {
         var t = sugCache[Number(b.getAttribute('data-sug'))];
         $('addPayee').value = t.payee; box.hidden = true;
         if (state.kind !== 'got' && t.category && kindRows().some(function (c) { return c.category === t.category; })) setCat(t.category);
-        if (t.account && state.accounts.indexOf(t.account) !== -1) $('addAcc').value = t.account;
+        if (t.account && state.accounts.indexOf(t.account) !== -1) setAcc(t.account);
       });
     });
+  }
+  function showFavs() { if (!$('addPayee').value.trim()) renderSug(favPayees()); }
+  $('addPayee').addEventListener('input', function () {
+    var v = $('addPayee').value;
+    if (!v.trim()) { showFavs(); return; }
+    renderSug(payeeSuggestions(v));
+    if (!sugCache.length && !hints().length && v.trim().length >= 2) { $('payeeSug').innerHTML = '<span class="note">Places from your YNAB history are still loading. Try again in a moment.</span>'; $('payeeSug').hidden = false; }
   });
-  /* Category picker: suggested first, then grouped. Used by Add and by the Places page. */
+  /* Category picker: suggested first (for this payee), then pinned, then grouped. Also used for the account list. */
   function pickRows() {
     var all = state.cats || [], held = state.pick.held;
     if (state.pick.both) return all.filter(function (c) { return c.category !== 'Income'; });
     return all.filter(function (c) { return held ? c.held : (!c.held && c.category !== 'Income'); });
   }
+  function pins() { try { return JSON.parse(LS.get('hanaro.pins') || '[]') || []; } catch (e) { return []; } }
+  function togglePin(name) { var a = pins(), i = a.indexOf(name); if (i === -1) a.push(name); else a.splice(i, 1); LS.set('hanaro.pins', JSON.stringify(a)); }
+  /** Categories this payee had before come first, then the ones used most lately. */
+  function suggestedFor(rows, payee) {
+    var ok = {}; rows.forEach(function (c) { ok[c.category] = 1; });
+    var key = String(payee || '').trim().toLowerCase(), byPayee = {}, recent = {}, out = [];
+    recentTxns().forEach(function (t) {
+      if (!t.category || !ok[t.category]) return;
+      recent[t.category] = (recent[t.category] || 0) + 1;
+      if (key && String(t.payee || '').trim().toLowerCase() === key) byPayee[t.category] = (byPayee[t.category] || 0) + 1;
+    });
+    function byCount(m) { return Object.keys(m).sort(function (x, y) { return m[y] - m[x]; }); }
+    byCount(byPayee).slice(0, 3).forEach(function (n) { out.push(n); });
+    byCount(recent).forEach(function (n) { if (out.length < 5 && out.indexOf(n) === -1) out.push(n); });
+    return out;
+  }
+  function bindPick() {
+    $('pickList').querySelectorAll('[data-cat]').forEach(function (b) {
+      b.addEventListener('click', function () { $('picker').hidden = true; state.pick.onPick(b.getAttribute('data-cat')); });
+    });
+    $('pickList').querySelectorAll('[data-pin]').forEach(function (b) {
+      b.addEventListener('click', function () { togglePin(b.getAttribute('data-pin')); pickList($('pickSearch').value); });
+    });
+  }
   function pickList(q) {
     q = (q || '').toLowerCase().trim();
-    var rows = pickRows(), held = state.pick.held, sel = state.pick.selected, html = '';
-    function row(name, mark) { return '<button type="button" class="prow" data-cat="' + esc(name) + '"><span>' + esc(name.replace(/^Held:\s*/, '')) + '</span>' + (mark ? '<span class="ck">✓</span>' : '') + '</button>'; }
+    var sel = state.pick.selected, html = '';
+    if (state.pick.items) {
+      var its = state.pick.items.filter(function (i) { return !q || i.name.toLowerCase().indexOf(q) !== -1; });
+      html = its.length ? '<div class="pcard">' + its.map(function (i) { return '<div class="prw"><button type="button" class="prow" data-cat="' + esc(i.value) + '"><span>' + esc(i.name) + '</span>' + (i.value === sel ? '<span class="ck">✓</span>' : '') + '</button></div>'; }).join('') + '</div>' : '<p class="note" style="padding:14px 4px">Nothing matches "' + esc(q) + '".</p>';
+      $('pickList').innerHTML = html; bindPick(); return;
+    }
+    var rows = pickRows(), held = state.pick.held, pinned = pins();
+    function row(name, mark) {
+      var on = pinned.indexOf(name) !== -1;
+      return '<div class="prw"><button type="button" class="prow" data-cat="' + esc(name) + '"><span>' + esc(name.replace(/^Held:\s*/, '')) + '</span>' + (mark ? '<span class="ck">✓</span>' : '') + '</button>' +
+        '<button type="button" class="pin' + (on ? ' on' : '') + '" data-pin="' + esc(name) + '" aria-label="' + (on ? 'Unpin ' : 'Pin ') + esc(name) + '">' + (on ? '★' : '☆') + '</button></div>';
+    }
     if (!q) {
-      var count = {};
-      recentTxns().forEach(function (t) { if (t.category && rows.some(function (c) { return c.category === t.category; })) count[t.category] = (count[t.category] || 0) + 1; });
-      var top = Object.keys(count).sort(function (a, b) { return count[b] - count[a]; }).slice(0, 5);
+      var top = suggestedFor(rows, state.pick.payee);
       if (top.length) html += '<div class="pgroup">Suggested</div><div class="pcard">' + top.map(function (n) { return row(n, n === sel); }).join('') + '</div>';
+      var pn = pinned.filter(function (n) { return rows.some(function (c) { return c.category === n; }); });
+      if (pn.length) html += '<div class="pgroup">Pinned</div><div class="pcard">' + pn.map(function (n) { return row(n, n === sel); }).join('') + '</div>';
     }
     var groups = {}, order = [];
     rows.forEach(function (c) {
@@ -934,18 +1080,28 @@
     order.forEach(function (g) { html += '<div class="pgroup">' + esc(g) + '</div><div class="pcard">' + groups[g].map(function (c) { return row(c.category, c.category === sel); }).join('') + '</div>'; });
     if (held && !q && !state.pick.noNew) html += '<div class="pcard" style="margin-top:14px"><button type="button" class="prow add" data-cat="__new">+ Add a new kind…</button></div>';
     if (!order.length && q) html += '<p class="note" style="padding:14px 4px">Nothing matches "' + esc(q) + '".</p>';
-    $('pickList').innerHTML = html;
-    $('pickList').querySelectorAll('[data-cat]').forEach(function (b) {
-      b.addEventListener('click', function () { $('picker').hidden = true; state.pick.onPick(b.getAttribute('data-cat')); });
-    });
+    $('pickList').innerHTML = html; bindPick();
   }
   function openPicker(opts) {
     state.pick = opts;
     $('pickTitle').textContent = opts.title || 'Category';
     $('pickSearch').value = ''; pickList(''); $('picker').hidden = false; $('picker').scrollTop = 0;
   }
+  function accountItems() {
+    var count = {}, last = LS.get('hanaro.lastacct') || '';
+    recentTxns().forEach(function (t) { if (t.account) count[t.account] = (count[t.account] || 0) + 1; });
+    var list = state.accounts.slice().sort(function (x, y) { return ((y === last) - (x === last)) || ((count[y] || 0) - (count[x] || 0)); });
+    var out = list.map(function (a) { return { name: a, value: a }; });
+    out.push({ name: 'Not sure / cash', value: '' });
+    return out;
+  }
+  $('accBtn').addEventListener('click', function () {
+    openPicker({ items: accountItems(), selected: $('addAcc').value, title: $('accLabel').textContent, onPick: function (v) { setAcc(v); } });
+  });
+  $('moreBtn').addEventListener('click', function () { var o = $('moreWrap').hidden; $('moreWrap').hidden = !o; $('moreChev').className = o ? 'chev open' : 'chev'; });
+  $('addPt').addEventListener('change', updateMore); $('addMemo').addEventListener('input', updateMore);
   $('catBtn').addEventListener('click', function () {
-    openPicker({ held: state.kind === 'held', selected: state.addCat, title: state.kind === 'held' ? 'What kind of money' : 'Category', onPick: function (name) {
+    openPicker({ held: state.kind === 'held', payee: $('addPayee').value, selected: state.addCat, title: state.kind === 'held' ? 'What kind of money' : 'Category', onPick: function (name) {
       setCat(name); if (name === '__new') setTimeout(function () { $('addNewType').focus(); }, 50);
     } });
   });
@@ -957,19 +1113,25 @@
   $('addNewType').addEventListener('input', function () { $('addMsg').textContent = ''; });
   $('addBtn').addEventListener('click', openAdd);
   $('addCancel').addEventListener('click', closeAdd); $('sheetBack').addEventListener('click', closeAdd);
-  $('entFam').addEventListener('click', function () { setEntity('Family'); }); $('entBiz').addEventListener('click', function () { setEntity('Business'); });
+  $('entFam').addEventListener('click', function () { state.entityTouched = true; setEntity('Family'); }); $('entBiz').addEventListener('click', function () { state.entityTouched = true; setEntity('Business'); });
   $('kindSpent').addEventListener('click', function () { setKind('spent'); }); $('kindGot').addEventListener('click', function () { setKind('got'); });
   $('kindHeld').addEventListener('click', function () { setKind('held'); });
   $('addSave').addEventListener('click', function () {
     var cur = $('addCur').value, foreign = cur !== 'IDR' && state.kind === 'spent', rawAmt = $('addAmount').value;
     var amt = foreign ? Math.round(parseFloat(rawAmt.replace(',', '.')) * 100) / 100 : Number(rawAmt.replace(/[^\d]/g, '')), typedIdr = foreign ? Number($('addIdr').value.replace(/[^\d]/g, '')) : 0, payee = $('addPayee').value.trim(), cat = state.addCat, k = state.kind;
     var m = $('addMsg'); m.textContent = '';
-    if (!amt || isNaN(amt)) { m.textContent = 'Type the amount as a number.'; return; }
-    if (!payee) { m.textContent = k === 'got' ? 'Type who it came from.' : 'Type who or what it was for.'; return; }
-    if (k === 'spent' && !cat) { m.textContent = 'Choose a category.'; return; }
-    if (k === 'held' && !cat) { m.textContent = 'Choose what kind of money this is.'; return; }
+    function fail(msg) { m.textContent = msg; banner(msg, true); }
+    var todayIso = localIso().slice(0, 10), dateVal = $('addDate').value || todayIso;
+    if (!amt || isNaN(amt)) return fail('Type the amount as a number.');
+    if (!payee) return fail(k === 'got' ? 'Type who it came from.' : 'Type who or what it was for.');
+    if (dateVal > todayIso) return fail('The date cannot be in the future.');
+    // A spend with no category is allowed. It is saved now and waits in Review for a category.
+    // An older server cannot take these yet. Say so now, plainly, instead of losing the entry later.
+    if ((state.apiV || 1) < 2 && k === 'spent' && !cat) return fail('Choose a category. Saving without one needs the Hanaro server update.');
+    if ((state.apiV || 1) < 2 && dateVal !== todayIso) return fail('Past dates need the Hanaro server update. Use today for now.');
+    if (k === 'held' && !cat) return fail('Choose what kind of money this is.');
     var newName = $('addNewType').value.trim();
-    if (k === 'held' && cat === '__new' && !newName) { m.textContent = 'Type a name for the new kind, for example Seminar fees.'; return; }
+    if (k === 'held' && cat === '__new' && !newName) return fail('Type a name for the new kind, for example Seminar fees.');
     // Saved on this device right away; sent in the background.
     var kind = { spent: 'purchase', got: 'income', held: 'held' }[k], acct = $('addAcc').value, memo = $('addMemo').value.trim();
     LS.set('hanaro.lastacct', acct);
@@ -984,16 +1146,18 @@
     }
     var now = localIso();
     patch('activity', function (d) {
-      d.items.unshift({ id: 'local_' + Date.now(), date: now.slice(0, 10), timestamp: now, type: kind === 'purchase' ? 'purchase' : kind === 'income' ? 'income' : 'held_in', amount: foreign ? (typedIdr || null) : amt, origCurrency: foreign ? cur : '', origAmount: foreign ? amt : null, est: foreign && !typedIdr, account: acct, payee: payee, category: kind === 'income' ? 'Income' : cat, bucket: '', status: 'confirmed', memo: memo, entity: entity === 'Business' ? 'Business' : '', ptFile: ptFile, source: 'manual', payNow: false, paid: false, links: '', who: '', by: entity === 'Business' ? 'Business' : ($('whoName').textContent || ''), cleared: false, receipt: !!photo, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null });
+      d.items.unshift({ id: 'local_' + Date.now(), date: dateVal, timestamp: dateVal === todayIso ? now : dateVal + 'T12:00:00+07:00', type: kind === 'purchase' ? 'purchase' : kind === 'income' ? 'income' : 'held_in', amount: foreign ? (typedIdr || null) : amt, origCurrency: foreign ? cur : '', origAmount: foreign ? amt : null, est: foreign && !typedIdr, account: acct, payee: payee, category: kind === 'income' ? 'Income' : cat, bucket: '', status: (kind === 'purchase' && !cat) ? 'auto' : 'confirmed', memo: memo, entity: entity === 'Business' ? 'Business' : '', ptFile: ptFile, source: 'manual', payNow: false, paid: false, links: '', who: '', by: entity === 'Business' ? 'Business' : ($('whoName').textContent || ''), cleared: false, receipt: !!photo, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null });
     });
     if (kind === 'purchase' && (!foreign || typedIdr)) patch('home', function (h) {
       var n = foreign ? typedIdr : amt;
-      h.spentToday += n; h.spentWeek += n; h.spentMonth += n; h.spentTodayCount += 1;
+      if (dateVal.slice(0, 7) === todayIso.slice(0, 7)) h.spentMonth += n;
+      if (dateVal === todayIso) { h.spentToday += n; h.spentWeek += n; h.spentTodayCount += 1; }
+      if (!cat) h.reviewCount += 1;
       h.avgPerDay = Math.round(h.spentMonth / Math.max(1, Number(now.slice(8, 10))));
     });
     closeAdd(); banner('Saved');
     var c0 = snap(state.view === 'spending' ? 'plan' : state.view); if (c0 && state.view !== 'status' && !editing($('view'))) { if (state.view === 'home' && wide()) paintBoard($('view')); else ({ home: paintHome, review: paintReview, activity: paintActivity, spending: paintSpending })[state.view]($('view'), c0.d); }
-    send('add_txn', { kind: kind, currency: foreign ? cur : 'IDR', idr_amount: typedIdr || undefined, amount: amt, payee: payee, category: cat, account: acct, memo: memo, entity: entity, pt_file: ptFile, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null, photo: photo || undefined }, label).then(function (ok) { if (ok && !queue.length) render(); });
+    send('add_txn', { kind: kind, currency: foreign ? cur : 'IDR', idr_amount: typedIdr || undefined, amount: amt, payee: payee, category: cat, account: acct, memo: memo, date: dateVal, entity: entity, pt_file: ptFile, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null, photo: photo || undefined }, label).then(function (ok) { if (ok && !queue.length) render(); });
   });
 
   /* ---------- start ---------- */

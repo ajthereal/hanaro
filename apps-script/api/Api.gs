@@ -495,7 +495,7 @@ function bootstrap_(book, who) {
     .map(function (c) { return { category: c.category, bucket: c.bucket, held: String(c.counts_in_bucket).toUpperCase() === 'HELD' }; });
   var accts = d.accounts.filter(function (x) { return x.active !== 'N' && x.entity !== 'PT' && (x.type === 'bank' || x.type === 'credit card'); }).map(function (x) { return x.account; });
   var plan = computePlan_({ plan: d.plan, txns: d.txns, accounts: d.accounts, today: d.today, paid: d.paid });
-  return { home: home, review: { items: review }, activity: { items: activity }, categories: { categories: cats, accounts: accts }, plan: plan };
+  return { home: home, review: { items: review }, activity: { items: activity }, categories: { categories: cats, accounts: accts, apiV: 2 }, plan: plan };
 }
 
 

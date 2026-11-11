@@ -185,3 +185,39 @@ button.okbtn{background:var(--good) !important;animation:pop .35s cubic-bezier(.
 @keyframes pop{0%{transform:scale(.94)}60%{transform:scale(1.04)}100%{transform:scale(1)}}
 @media (prefers-reduced-motion:reduce){.card,.mrow .mk,button.okbtn{transition:none;animation:none}}
 button.okbtn:disabled{opacity:1}
+
+/* Add screen: category rows with a pin, More, date */
+.prw{display:flex;align-items:center;border-bottom:1px solid var(--line)}.prw:last-child{border-bottom:0}.prw .prow{flex:1;border-bottom:0}
+.pin{flex:none;width:44px;height:44px;border:0;background:none;font-size:20px;color:#9DB3B8;padding:0}.pin.on{color:#E9B949}
+.chev{transition:transform .15s}.chev.open{transform:rotate(90deg)}
+.field input[type=date]{display:block;text-align:left;min-width:0;color:var(--text);-webkit-appearance:none;appearance:none}
+#moreWrap .field:last-child{border-bottom:0}
+
+/* Activity, laid out like the YNAB Spending list: two lines per transaction */
+.acthead{display:flex;justify-content:space-between;align-items:center}
+#actQ{margin-top:2px}
+.inbox{display:flex;align-items:center;gap:10px;background:#fff;border-radius:20px;box-shadow:var(--shadow);padding:10px 12px 10px 14px;font-size:15px}
+.inbox .cnt{background:var(--sky);color:var(--teal);font-weight:700;font-size:13px;border-radius:8px;padding:2px 8px}
+.inbox .it{flex:1}
+.inbox .rv{border:0;background:#E4EAFF;color:#2B3FA0;font-weight:600;font-size:14px;border-radius:16px;padding:0 16px;min-height:36px}
+.acard{background:#fff;border-radius:24px;box-shadow:var(--shadow);overflow:hidden}
+.dband{background:var(--line);color:var(--text);font-size:13.5px;font-weight:600;padding:9px 16px}
+.arow{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;width:100%;border:0;border-bottom:1px solid var(--line);background:none;font:inherit;color:var(--text);text-align:left;padding:12px 16px}
+.arow:last-child{border-bottom:0}
+button.arow:active{background:#F4FAF8}
+.arow .al{min-width:0;flex:1;display:flex;flex-direction:column;gap:6px}
+.arow .ap{font-weight:600;font-size:15.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.achips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.cpill{display:inline-block;background:#EEF3F3;color:var(--text);border-radius:10px;padding:4px 10px;font-size:12.5px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cpill.blue{background:#E4EAFF;color:#2B3FA0}.cpill.none{background:#FFE9E5;color:var(--warn)}.cpill.green{background:#DDF5EA;color:var(--good)}
+.arow .ar{flex:none;text-align:right;max-width:46%}
+.arow .aa{font-size:15.5px;font-weight:600;white-space:nowrap}.arow .aa.plus{color:var(--good)}
+.arow .ac{font-size:12px;color:var(--muted);margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.arow .aa + .ac{margin-top:6px}
+
+/* Open one purchase */
+#txnEdit{position:fixed;inset:0;z-index:14;background:#F4FAF8;overflow:auto;padding:max(14px,env(safe-area-inset-top)) 16px 40px;max-width:520px;margin:0 auto}
+.te-amt{font-size:44px;font-weight:300;color:var(--teal);letter-spacing:-1px;text-align:center;margin:4px 0 2px}
+.te-sub{font-size:13px;color:var(--muted);text-align:center;margin-bottom:14px}
+
+.field label.chk{display:flex;margin:0}
