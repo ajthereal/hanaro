@@ -448,15 +448,24 @@ function addTxn_(book, who, req) {
   }
   if (!req.payee) throw userError_('Type who or what it was for.');
   var income = req.kind === 'income', held = req.kind === 'held';
-  if (!income && !req.category) throw userError_(held ? 'Choose what kind of money this is.' : 'Choose a category.');
+  if (held && !req.category) throw userError_('Choose what kind of money this is.');
   if (held && !isHeld_(book, req.category)) throw userError_('That kind of money is not set up for holding. Add it as a new type first.');
-  if (!held && !income && isHeld_(book, req.category)) throw userError_('That type is for money held for others. Use Held for others.');
+  if (!held && !income && req.category && isHeld_(book, req.category)) throw userError_('That type is for money held for others. Use Held for others.');
   var now = nowIso_(), id = 't_' + Utilities.getUuid().replace(/-/g, '').slice(0, 12);
-  var cat = income ? 'Income' : req.category;
+  var cat = income ? 'Income' : (req.category || '');
+  // A spend without a category is saved now and waits in Review for a category.
+  var uncategorized = !income && !held && !cat;
+  // A date other than today is kept as the day it happened, so totals and lists put it on the right day.
+  var day = now.slice(0, 10), stamp = now;
+  if (req.date) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(req.date))) throw userError_('Choose the date again.');
+    if (String(req.date) > day) throw userError_('The date cannot be in the future.');
+    if (String(req.date) < day) { day = String(req.date); stamp = day + 'T12:00:00+07:00'; }
+  }
   append_(book, 'Transactions', [{
-    id: id, date: req.date || now.slice(0, 10), timestamp: now, txn_type: held ? 'held_in' : (income ? 'income' : 'purchase'), idr_amount: amt, orig_amount: origAmt, orig_currency: cur, fx_rate: fx === null ? '' : fx, flags: est ? 'fx_est' : '',
-    account: req.account || '', payee: req.payee, category: cat, bucket: (income || held) ? '' : bucketForCategory(rows_(book, 'Categories'), cat),
-    who: NAMES[who], source: 'manual', settled: 'Y', status: 'confirmed', memo: req.memo || '', entity: (req.entity === 'Family' || req.entity === 'Business') ? req.entity : '', pt_file: req.pt_file ? 'Y' : '', created_at: now, updated_at: now,
+    id: id, date: day, timestamp: stamp, txn_type: held ? 'held_in' : (income ? 'income' : 'purchase'), idr_amount: amt, orig_amount: origAmt, orig_currency: cur, fx_rate: fx === null ? '' : fx, flags: est ? 'fx_est' : '',
+    account: req.account || '', payee: req.payee, category: cat, bucket: (income || held || !cat) ? '' : bucketForCategory(rows_(book, 'Categories'), cat),
+    who: NAMES[who], source: 'manual', settled: 'Y', status: uncategorized ? 'auto' : 'confirmed', memo: req.memo || '', entity: (req.entity === 'Family' || req.entity === 'Business') ? req.entity : '', pt_file: req.pt_file ? 'Y' : '', created_at: now, updated_at: now,
     lat: has_(req.lat) && req.lat !== '' && req.lat !== null ? Number(req.lat) : '', lng: has_(req.lng) && req.lng !== '' && req.lng !== null ? Number(req.lng) : ''
   }]);
   audit_(book, NAMES[who], 'add', 'Transactions', id, '', '', amt);

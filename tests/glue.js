@@ -111,6 +111,23 @@ const ev = run("planView_(book_(), 'aj')").fixed.find((f) => f.item === 'Electri
 eq('a Paid tap shows the bill as paid', [ev.status, ev.spent, ev.match], ['paid', 2000000, 'pln']);
 eq('a Paid tap is written to the Audit tab', sb.__book.data.Audit.some((r) => r[2] === 'plan_paid'), true);
 
+// add without a category: saved now, waits in Review; backdating keeps the real day
+const u1 = run("addTxn_(book_(), 'aj', { kind: 'purchase', amount: 45000, payee: 'Warung Test', category: '', account: '' })");
+const ur = sb.__book.data.Transactions.find((r) => r[0] === u1.id);
+eq('no category is allowed and saved as waiting', [col(ur, 'status'), col(ur, 'category'), col(ur, 'bucket')], ['auto', '', '']);
+eq('it appears in Review as a new item', run("reviewItems(data_(book_(), 'aj').txns)").some((i) => i.t.id === u1.id && i.kind === 'confirm'), true);
+let cerr = ''; try { run("updateTxn_(book_(), 'aj', { id: '" + u1.id + "', changes: {}, confirm: true })"); } catch (e) { cerr = e.userMessage; }
+eq('confirming without a category is still refused', cerr, 'Choose a category before confirming.');
+run("updateTxn_(book_(), 'aj', { id: '" + u1.id + "', changes: { category: 'Eating out' }, confirm: true })");
+eq('a category then confirms it', col(sb.__book.data.Transactions.find((r) => r[0] === u1.id), 'status'), 'confirmed');
+const d1 = run("addTxn_(book_(), 'aj', { kind: 'purchase', amount: 20000, payee: 'Yesterday Test', category: 'Eating out', date: '2020-01-02' })");
+const dr = sb.__book.data.Transactions.find((r) => r[0] === d1.id);
+eq('a past date is kept as that day', [col(dr, 'date'), String(col(dr, 'timestamp')).slice(0, 10)], ['2020-01-02', '2020-01-02']);
+let ferr = ''; try { run("addTxn_(book_(), 'aj', { kind: 'purchase', amount: 1000, payee: 'X', category: 'Eating out', date: '2999-01-01' })"); } catch (e) { ferr = e.userMessage; }
+eq('a future date is refused plainly', ferr, 'The date cannot be in the future.');
+let berr = ''; try { run("addTxn_(book_(), 'aj', { kind: 'purchase', amount: 1000, payee: 'X', category: 'Eating out', date: 'tomorrow' })"); } catch (e) { berr = e.userMessage; }
+eq('a broken date is refused plainly', berr, 'Choose the date again.');
+
 // bootstrap shape
 const b = run("bootstrap_(book_(), 'aj')");
 eq('bootstrap has every screen', Object.keys(b).sort(), ['activity', 'categories', 'home', 'plan', 'review']);
