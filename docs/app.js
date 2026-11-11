@@ -576,6 +576,7 @@
         '<div class="btnrow"><button class="ghost small" data-act="keep_both" data-id="' + id + '">Keep both</button><button class="primary small" data-act="merge_dup" data-id="' + id + '">Merge into one</button></div>';
     } else if (i.kind === 'pay_now') {
       h += '<div class="item-top"><div class="p">' + esc(t.payee) + '</div>' + amt + '</div><div class="sub">' + esc(t.account) + ' · ' + esc(t.timestamp.slice(11, 16)) + '. Pay it today to earn miles and avoid interest.</div>' +
+        catBtn(t.category, ' data-f-cat') + '<p class="err" data-err></p>' +
         '<div class="btnrow"><button class="ghost small" data-act="later" data-id="' + id + '">Later</button><button class="primary small" data-act="paid" data-id="' + id + '">I paid it</button></div>';
     } else {
       h += '<div class="item-top"><div class="p">' + esc(t.payee) + '</div>' + amt + '</div><div class="sub">' + esc(when(t.timestamp)) + ' · ' + esc(t.account) + '</div>' +
@@ -591,7 +592,13 @@
     if (err) err.textContent = '';
     if (act === 'later') { state.later[id] = true; repaintReview(v); return; }
     var action, args, label = 'that change';
-    if (act === 'paid') { action = 'mark_paid'; args = { id: id }; }
+    if (act === 'paid') {
+      action = 'mark_paid'; args = { id: id };
+      // A category picked on the card is saved first, so it is not asked for again after paying.
+      var pcat = card.querySelector('[data-f-cat]');
+      pcat = pcat ? pcat.getAttribute('data-val') : '';
+      if (pcat) queue.push({ action: 'update_txn', args: { id: id, changes: { category: pcat }, confirm: true }, label: 'the category' }), saveQueue();
+    }
     else if (act === 'keep_both') { action = 'keep_both'; args = { id: id }; }
     else if (act === 'merge_dup') { action = 'merge_dup'; args = { id: id }; }
     else {
