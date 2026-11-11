@@ -231,3 +231,9 @@ button.arow:active{background:#F4FAF8}
 #keypad button.done{grid-column:span 3;background:linear-gradient(90deg,var(--teal),var(--teal2));color:#fff;font-size:16px;font-weight:600}
 body.kp #addSave{display:none}
 body.kp #sheet{padding-bottom:calc(380px + env(safe-area-inset-bottom))}
+
+/* Keypad slides in and out; the amount and tabs stay at the top so the amount can always be tapped */
+#keypad{transition:transform .26s cubic-bezier(.2,.8,.2,1),visibility 0s}
+#keypad.off{transform:translateY(110%);visibility:hidden;transition:transform .26s cubic-bezier(.4,0,1,1),visibility 0s linear .26s}
+#sheet{transition:padding-bottom .26s ease}
+.addtop{position:sticky;top:0;z-index:3}

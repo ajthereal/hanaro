@@ -920,7 +920,7 @@
       setExpr(''); ['addPayee', 'addMemo', 'addNewType'].forEach(function (i) { $(i).value = ''; });
       state.entityTouched = false; $('moreWrap').hidden = true; $('moreChev').className = 'chev'; (function () { var td = localIso().slice(0, 10); $('addDate').value = td; $('addDate').max = td; })(); $('payeeSug').hidden = true; $('addMsg').textContent = ''; setEntity('Family'); $('addPt').checked = false; setKind('spent'); (function () { var lc = null; try { lc = JSON.parse(LS.get('hanaro.lastcur') || 'null'); } catch (e) {} setCur(lc && lc.c && Date.now() - lc.at < 3 * 86400000 ? lc.c : 'IDR'); })();
       state.photo = null; $('photoMsg').textContent = ''; $('photoBtn').textContent = 'Take or choose a photo'; locateAdd();
-      $('sheetBack').hidden = false; $('sheet').hidden = false; showFavs(); updateMore(); openKeypad();
+      $('sheetBack').hidden = false; $('sheet').hidden = false; showFavs(); updateMore(); $('sheet').scrollTop = 0; kpScroll = 0; openKeypad();
     }, function (e) { banner(e.message, true); });
   }
   /* Location: suggests payee, category and account from the nearest earlier purchase (within 150 m). */
@@ -1163,16 +1163,25 @@
     setExpr(e);
     if (k === 'done') { closeKeypad(); if (!$('addPayee').value) $('addPayee').focus(); }
   }
-  function openKeypad() { renderKeyLeft(); $('keypad').hidden = false; document.body.classList.add('kp'); }
-  function closeKeypad() { $('keypad').hidden = true; document.body.classList.remove('kp'); }
+  function openKeypad() { renderKeyLeft(); $('keypad').classList.remove('off'); document.body.classList.add('kp'); }
+  function closeKeypad() { $('keypad').classList.add('off'); document.body.classList.remove('kp'); }
+  function keypadOpen() { return !$('keypad').classList.contains('off'); }
   $('keypad').querySelectorAll('[data-k]').forEach(function (b) { b.addEventListener('click', function () { press(b.getAttribute('data-k')); }); });
-  $('addAmount').addEventListener('click', openKeypad);
+  /* Tap the amount to bring the keypad back. */
+  document.querySelector('.amtwrap').addEventListener('click', function (ev) { if (!ev.target.closest('select')) openKeypad(); });
+  /* Scrolling the form slides the keypad down so it never sits on top of the fields. */
+  var kpScroll = 0;
+  $('sheet').addEventListener('scroll', function () {
+    var st = $('sheet').scrollTop;
+    if (keypadOpen() && st > 0 && Math.abs(st - kpScroll) > 6) closeKeypad();
+    kpScroll = st;
+  }, { passive: true });
   $('addCur').addEventListener('change', openKeypad);
   /* Tapping any other field puts the keypad away so the phone's keyboard can show. */
   $('sheet').addEventListener('click', function (ev) { if (!ev.target.closest('.amtwrap') && !ev.target.closest('.seg')) closeKeypad(); });
   /* A hardware keyboard (iPad) works too. */
   document.addEventListener('keydown', function (ev) {
-    if ($('keypad').hidden || $('sheet').hidden) return;
+    if (!keypadOpen() || $('sheet').hidden) return;
     var k = ev.key;
     if (/^\d$/.test(k) || /^[+\-*\/]$/.test(k)) press(k);
     else if (k === '.') press('L');
