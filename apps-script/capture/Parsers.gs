@@ -12,6 +12,16 @@
 
 var MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, mei: 5, jun: 6, jul: 7, aug: 8, agu: 8, sep: 9, oct: 10, okt: 10, nov: 11, dec: 12, des: 12 };
 
+/** A QR wallet prefix is not a payee. "GoPayQRTahuKriukYE" becomes "Tahu Kriuk YE". Other names are left alone. */
+function cleanMerchant_(raw) {
+  var s = String(raw || '').trim();
+  var m = s.match(/^(?:gopay\s*qr|gopay)[\s\-*:]*(.+)$/i);
+  if (!m) return s;
+  s = m[1].trim();
+  if (/[a-z]/.test(s) && /[A-Z]/.test(s)) s = s.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+  return s.replace(/\s+/g, ' ').trim() || String(raw || '').trim();
+}
+
 function htmlToText(html) {
   if (!html) return '';
   var t = String(html)
@@ -149,7 +159,7 @@ function parseBcaCard(msg) {
   t.timestamp = when; t.date = when.slice(0, 10); t.idr_amount = amt;
   t.account_last = last4(f['nomor kartu']);
   t.card_customer = f['nomor customer'] || '';
-  t.payee = f['merchant / atm'] || '';
+  t.payee = cleanMerchant_(f['merchant / atm'] || '');
   t.memo = f['jenis transaksi'] || '';
   return { status: 'parsed', txn: t };
 }
@@ -243,5 +253,5 @@ function parseEmail(msg) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { parseEmail: parseEmail, parseIdr: parseIdr, parseWib: parseWib, htmlToText: htmlToText, extractFields: extractFields, isKnownSender: isKnownSender, dedupeKey: dedupeKey };
+  module.exports = { parseEmail: parseEmail, parseIdr: parseIdr, parseWib: parseWib, htmlToText: htmlToText, extractFields: extractFields, isKnownSender: isKnownSender, dedupeKey: dedupeKey, cleanMerchant_: cleanMerchant_ };
 }

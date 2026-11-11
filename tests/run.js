@@ -74,7 +74,10 @@ r = P.parseEmail({
 });
 eq('bca card amount', r.txn.idr_amount, 96416);
 eq('bca card last4', r.txn.account_last, '1234');
-eq('bca card payee', r.txn.payee, 'GoPayQRSAMPLECAFE');
+eq('bca card payee', r.txn.payee, 'SAMPLECAFE');
+eq('qr prefix removed', P.cleanMerchant_('GoPayQRMieAyamBaruXY'), 'Mie Ayam Baru XY');
+eq('qr prefix with space', P.cleanMerchant_('GoPay QR Kopi Sample'), 'Kopi Sample');
+eq('other merchant kept', P.cleanMerchant_('Example Store Jakarta'), 'Example Store Jakarta');
 
 // --- BCA marketing from the card sender is ignored, not review
 r = P.parseEmail({ from: 'kartukreditbca@bca.co.id', subject: 'Potongan hingga Rp511 Ribu! Booking Tiket', messageId: 'm5', html: '<p>promo</p>' });
