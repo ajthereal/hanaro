@@ -237,3 +237,16 @@ body.kp #sheet{padding-bottom:calc(380px + env(safe-area-inset-bottom))}
 #keypad.off{transform:translateY(110%);visibility:hidden;transition:transform .26s cubic-bezier(.4,0,1,1),visibility 0s linear .26s}
 #sheet{transition:padding-bottom .26s ease}
 .addtop{position:sticky;top:0;z-index:3}
+
+/* Date calendar, photo and memo rows */
+.fv.blue{color:var(--teal)}
+.cal{background:#fff;border-radius:18px;padding:10px 8px 8px;margin:4px 0 8px}
+.calhead{display:flex;align-items:center;gap:4px;padding:0 6px 6px}.caltitle{flex:1;text-align:left;border:0;background:none;font:inherit;font-weight:700;font-size:16px;color:inherit;padding:8px 0}
+.calnav{border:0;background:none;color:var(--teal);font-size:26px;line-height:1;width:44px;height:40px}.calnav:disabled{opacity:.25}
+.calgrid{display:grid;grid-template-columns:repeat(7,1fr);row-gap:2px;text-align:center}
+.calwk span{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;padding:4px 0}
+.calgrid button{border:0;background:none;font:inherit;font-size:17px;height:42px;width:42px;margin:0 auto;border-radius:50%;color:inherit;padding:0}
+.calgrid button.on{background:var(--teal);color:#fff;font-weight:700}.calgrid button:disabled{opacity:.3}
+.pmenu{display:flex;gap:8px;padding:2px 0 10px}.pmenu button{flex:1;border:1px solid #B7DAD6;background:#F4FAF8;border-radius:14px;padding:12px;font:inherit;font-size:15px;color:var(--teal);min-height:44px}
+.pprev{padding:0 0 10px}.pprev img,.thumb{display:block;max-width:100%;max-height:120px;border-radius:12px;object-fit:cover;margin:6px 0}
+.pprev img.big{max-height:60vh;object-fit:contain}.pact{display:flex;gap:18px}

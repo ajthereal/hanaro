@@ -715,7 +715,7 @@
     $('teSub').textContent = bandLabel(t.date) + ' · ' + (t.account || 'No account') + (t.origCurrency && t.origCurrency !== 'IDR' && t.origAmount !== null ? ' · ' + t.origCurrency + ' ' + Number(t.origAmount).toFixed(2) : '');
     $('tePayee').value = t.payee || ''; $('teMemo').value = t.memo || '';
     setTeCat(te.cat); setTeEnt(te.ent); $('tePt').checked = !!t.ptFile;
-    $('tePhoto').textContent = t.receipt ? 'Receipt saved ✓ · Replace' : 'Add receipt photo'; $('teMsg').textContent = '';
+    $('tePhoto').textContent = t.receipt ? 'Receipt saved ✓ · Replace' : 'Add receipt photo'; $('tePhotoThumb').hidden = true; $('teMsg').textContent = '';
     $('txnEdit').hidden = false; $('txnEdit').scrollTop = 0;
   }
   $('teBack').addEventListener('click', function () { $('txnEdit').hidden = true; });
@@ -730,7 +730,7 @@
   $('tePhotoIn').addEventListener('change', function () {
     var f = $('tePhotoIn').files[0]; if (!f) return;
     $('tePhoto').textContent = 'Preparing…';
-    compress(f).then(function (ph) { te.photo = ph; $('tePhoto').textContent = 'Photo ready ✓ · Replace'; }, function (e) { te.photo = null; $('tePhoto').textContent = 'Add receipt photo'; $('teMsg').textContent = e.message; });
+    compress(f).then(function (ph) { te.photo = ph; $('tePhoto').textContent = 'Photo ready ✓ · Replace'; $('tePhotoThumb').src = dataUrl(ph); $('tePhotoThumb').hidden = false; }, function (e) { te.photo = null; $('tePhoto').textContent = 'Add receipt photo'; $('teMsg').textContent = e.message; });
     $('tePhotoIn').value = '';
   });
   $('teSave').addEventListener('click', function () {
@@ -891,9 +891,7 @@
   function updateMore() {
     var bits = [];
     if (state.kind === 'spent') { bits.push(state.entity === 'Business' ? 'Business' : 'Family'); if ($('addPt').checked) bits.push('PT AHU'); }
-    if ($('addMemo').value.trim()) bits.push('Memo');
-    if (state.photo) bits.push('Photo');
-    $('moreVal').textContent = bits.length ? bits.join(' · ') : 'Memo, photo';
+    $('moreVal').textContent = bits.length ? bits.join(' · ') : 'Family or business';
   }
   function fmtAmt(el) {
     if (el.id === 'addAmount' && $('addCur').value !== 'IDR') {
@@ -918,8 +916,8 @@
       $('addAcc').innerHTML = '<option value="">Not sure / cash</option>' + state.accounts.map(function (a) { return '<option' + (a === last ? ' selected' : '') + '>' + esc(a) + '</option>'; }).join('');
       setAcc(state.accounts.indexOf(last) !== -1 ? last : '');
       setExpr(''); ['addPayee', 'addMemo', 'addNewType'].forEach(function (i) { $(i).value = ''; });
-      state.entityTouched = false; $('moreWrap').hidden = true; $('moreChev').className = 'chev'; (function () { var td = localIso().slice(0, 10); $('addDate').value = td; $('addDate').max = td; })(); $('payeeSug').hidden = true; $('addMsg').textContent = ''; setEntity('Family'); $('addPt').checked = false; setKind('spent'); (function () { var lc = null; try { lc = JSON.parse(LS.get('hanaro.lastcur') || 'null'); } catch (e) {} setCur(lc && lc.c && Date.now() - lc.at < 3 * 86400000 ? lc.c : 'IDR'); })();
-      state.photo = null; $('photoMsg').textContent = ''; $('photoBtn').textContent = 'Take or choose a photo'; locateAdd();
+      state.entityTouched = false; $('moreWrap').hidden = true; $('moreChev').className = 'chev'; setDate(localIso().slice(0, 10)); $('calWrap').hidden = true; $('photoMenu').hidden = true; $('payeeSug').hidden = true; $('addMsg').textContent = ''; setEntity('Family'); $('addPt').checked = false; setKind('spent'); (function () { var lc = null; try { lc = JSON.parse(LS.get('hanaro.lastcur') || 'null'); } catch (e) {} setCur(lc && lc.c && Date.now() - lc.at < 3 * 86400000 ? lc.c : 'IDR'); })();
+      setPhoto(null); locateAdd();
       $('sheetBack').hidden = false; $('sheet').hidden = false; showFavs(); updateMore(); $('sheet').scrollTop = 0; kpScroll = 0; openKeypad();
     }, function (e) { banner(e.message, true); });
   }
@@ -942,13 +940,49 @@
     }, { timeout: 4000, maximumAge: 60000, enableHighAccuracy: false });
   }
   $('geoClear').addEventListener('click', function () { $('addPayee').value = ''; setCat(''); $('geoNote').hidden = true; state.geoApplied = false; });
-  $('photoBtn').addEventListener('click', function () { $('photoIn').click(); });
-  $('photoIn').addEventListener('change', function () {
-    var f = $('photoIn').files[0]; if (!f) return;
-    $('photoMsg').textContent = 'Preparing photo…';
-    compress(f).then(function (ph) { state.photo = ph; $('photoMsg').textContent = 'Photo added ✓'; $('photoBtn').textContent = 'Change photo'; updateMore(); }, function (e) { state.photo = null; $('photoMsg').textContent = e.message; });
-    $('photoIn').value = '';
-  });
+  function dataUrl(ph) { return 'data:' + ph.mime + ';base64,' + ph.data; }
+  function setPhoto(ph) {
+    state.photo = ph; $('photoMenu').hidden = true;
+    $('photoPrev').hidden = !ph; if (ph) $('photoThumb').src = dataUrl(ph); else $('photoThumb').removeAttribute('src');
+    $('photoVal').textContent = ph ? 'Added' : 'Add a receipt photo'; $('photoVal').className = ph ? 'fv' : 'fv empty';
+    updateMore();
+  }
+  function takePhoto(input) {
+    var f = input.files[0]; if (!f) return;
+    $('photoVal').textContent = 'Preparing photo…'; $('photoMenu').hidden = true;
+    compress(f).then(setPhoto, function (e) { setPhoto(null); $('addMsg').textContent = e.message; });
+    input.value = '';
+  }
+  $('photoBtn').addEventListener('click', function () { $('photoMenu').hidden = !$('photoMenu').hidden; });
+  $('photoTake').addEventListener('click', function () { $('photoCam').click(); });
+  $('photoPick').addEventListener('click', function () { $('photoIn').click(); });
+  $('photoChange').addEventListener('click', function () { $('photoMenu').hidden = false; });
+  $('photoRemove').addEventListener('click', function () { setPhoto(null); });
+  $('photoCam').addEventListener('change', function () { takePhoto($('photoCam')); });
+  $('photoIn').addEventListener('change', function () { takePhoto($('photoIn')); });
+  $('photoThumb').addEventListener('click', function () { $('photoThumb').classList.toggle('big'); });
+  /* Date: tapping the row opens a month calendar right under it, like YNAB. Future days are off. */
+  var cal = { y: 0, m: 0 }, MONTHS_L = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  function setDate(iso) {
+    $('addDate').value = iso; $('addDate').max = localIso().slice(0, 10);
+    var p = iso.split('-'); $('dateVal').textContent = MONTHS_L[Number(p[1]) - 1] + ' ' + Number(p[2]) + ', ' + p[0];
+    cal.y = Number(p[0]); cal.m = Number(p[1]) - 1; paintCal();
+  }
+  function paintCal() {
+    var today = localIso().slice(0, 10), sel = $('addDate').value, first = new Date(cal.y, cal.m, 1).getDay(), n = new Date(cal.y, cal.m + 1, 0).getDate(), h = '', i;
+    $('calTitle').textContent = MONTHS_L[cal.m] + ' ' + cal.y;
+    for (i = 0; i < first; i++) h += '<span></span>';
+    for (i = 1; i <= n; i++) {
+      var iso = cal.y + '-' + ('0' + (cal.m + 1)).slice(-2) + '-' + ('0' + i).slice(-2);
+      h += '<button type="button" data-d="' + iso + '" class="' + (iso === sel ? 'on' : '') + '"' + (iso > today ? ' disabled' : '') + '>' + i + '</button>';
+    }
+    $('calDays').innerHTML = h;
+    var t = today.split('-'); $('calNext').disabled = cal.y > Number(t[0]) || (cal.y === Number(t[0]) && cal.m >= Number(t[1]) - 1);
+  }
+  $('dateBtn').addEventListener('click', function () { $('calWrap').hidden = !$('calWrap').hidden; });
+  $('calPrev').addEventListener('click', function () { cal.m--; if (cal.m < 0) { cal.m = 11; cal.y--; } paintCal(); });
+  $('calNext').addEventListener('click', function () { cal.m++; if (cal.m > 11) { cal.m = 0; cal.y++; } paintCal(); });
+  $('calDays').addEventListener('click', function (ev) { var b = ev.target.closest('[data-d]'); if (b && !b.disabled) setDate(b.getAttribute('data-d')); });
   function closeAdd() { closeKeypad(); $('sheet').hidden = true; $('sheetBack').hidden = true; $('picker').hidden = true; }
   function setEntity(e) { state.entity = e; $('entFam').className = e === 'Family' ? 'on' : ''; $('entBiz').className = e === 'Business' ? 'on' : ''; updateMore(); }
   function setKind(k) {
@@ -1013,7 +1047,8 @@
       });
     });
   }
-  function showFavs() { if (!$('addPayee').value.trim()) renderSug(favPayees()); }
+  /* No payee chips before typing. Suggestions come only from the location, or from what is typed. */
+  function showFavs() { $('payeeSug').hidden = true; }
   $('addPayee').addEventListener('input', function () {
     var v = $('addPayee').value;
     if (!v.trim()) { showFavs(); return; }
