@@ -60,7 +60,7 @@
   <div class="addtop">
     <button id="addCancel" class="roundx" aria-label="Close"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     <label for="addAmount" class="sr">Amount in rupiah</label>
-    <div class="amtwrap"><select id="addCur" class="curchip" aria-label="Currency"><option value="IDR">Rp</option><option>SGD</option><option>MYR</option><option>USD</option><option>JPY</option><option>EUR</option><option>AUD</option><option>THB</option></select><input id="addAmount" inputmode="numeric" autocomplete="off" placeholder="0"></div>
+    <div class="amtwrap"><select id="addCur" class="curchip" aria-label="Currency"><option value="IDR">Rp</option><option>SGD</option><option>MYR</option><option>USD</option><option>JPY</option><option>EUR</option><option>AUD</option><option>THB</option></select><input id="addAmount" inputmode="none" readonly autocomplete="off" placeholder="0"></div>
     <div class="seg" role="tablist">
       <button id="kindSpent" class="on" role="tab">Spent</button>
       <button id="kindGot" role="tab">Received</button>
@@ -89,6 +89,8 @@
   <p id="addMsg" class="err" role="alert"></p>
   <button id="addSave" class="primary savefab">Save</button>
 </section>
+
+<div id="keypad" hidden aria-label="Amount keypad"></div>
 
 <section id="picker" hidden role="dialog" aria-modal="true" aria-label="Choose a category">
   <div class="pickhead"><button id="pickBack" class="roundx" aria-label="Back"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button><div class="pickttl" id="pickTitle">Category</div></div>

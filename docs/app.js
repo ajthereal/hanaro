@@ -907,7 +907,7 @@
   }
   function setCur(c) {
     $('addCur').value = c; var foreign = c !== 'IDR';
-    $('addAmount').setAttribute('inputmode', foreign ? 'decimal' : 'numeric'); $('addAmount').value = '';
+    setExpr(''); renderKeyLeft();
     $('fxWrap').hidden = !foreign || state.kind !== 'spent'; $('addIdr').value = '';
     LS.set('hanaro.lastcur', JSON.stringify({ c: c, at: Date.now() }));
   }
@@ -917,10 +917,10 @@
       var last = LS.get('hanaro.lastacct') || '';
       $('addAcc').innerHTML = '<option value="">Not sure / cash</option>' + state.accounts.map(function (a) { return '<option' + (a === last ? ' selected' : '') + '>' + esc(a) + '</option>'; }).join('');
       setAcc(state.accounts.indexOf(last) !== -1 ? last : '');
-      ['addAmount', 'addPayee', 'addMemo', 'addNewType'].forEach(function (i) { $(i).value = ''; });
+      setExpr(''); ['addPayee', 'addMemo', 'addNewType'].forEach(function (i) { $(i).value = ''; });
       state.entityTouched = false; $('moreWrap').hidden = true; $('moreChev').className = 'chev'; (function () { var td = localIso().slice(0, 10); $('addDate').value = td; $('addDate').max = td; })(); $('payeeSug').hidden = true; $('addMsg').textContent = ''; setEntity('Family'); $('addPt').checked = false; setKind('spent'); (function () { var lc = null; try { lc = JSON.parse(LS.get('hanaro.lastcur') || 'null'); } catch (e) {} setCur(lc && lc.c && Date.now() - lc.at < 3 * 86400000 ? lc.c : 'IDR'); })();
       state.photo = null; $('photoMsg').textContent = ''; $('photoBtn').textContent = 'Take or choose a photo'; locateAdd();
-      $('sheetBack').hidden = false; $('sheet').hidden = false; showFavs(); updateMore(); setTimeout(function () { $('addAmount').focus(); }, 50);
+      $('sheetBack').hidden = false; $('sheet').hidden = false; showFavs(); updateMore(); openKeypad();
     }, function (e) { banner(e.message, true); });
   }
   /* Location: suggests payee, category and account from the nearest earlier purchase (within 150 m). */
@@ -949,7 +949,7 @@
     compress(f).then(function (ph) { state.photo = ph; $('photoMsg').textContent = 'Photo added ✓'; $('photoBtn').textContent = 'Change photo'; updateMore(); }, function (e) { state.photo = null; $('photoMsg').textContent = e.message; });
     $('photoIn').value = '';
   });
-  function closeAdd() { $('sheet').hidden = true; $('sheetBack').hidden = true; $('picker').hidden = true; }
+  function closeAdd() { closeKeypad(); $('sheet').hidden = true; $('sheetBack').hidden = true; $('picker').hidden = true; }
   function setEntity(e) { state.entity = e; $('entFam').className = e === 'Family' ? 'on' : ''; $('entBiz').className = e === 'Business' ? 'on' : ''; updateMore(); }
   function setKind(k) {
     state.kind = k;
@@ -1107,7 +1107,6 @@
   });
   $('pickSearch').addEventListener('input', function () { pickList($('pickSearch').value); });
   $('pickBack').addEventListener('click', function () { $('picker').hidden = true; });
-  $('addAmount').addEventListener('input', function () { fmtAmt($('addAmount')); });
   $('addCur').addEventListener('change', function () { setCur($('addCur').value); });
   $('addIdr').addEventListener('input', function () { fmtAmt($('addIdr')); });
   $('addNewType').addEventListener('input', function () { $('addMsg').textContent = ''; });
@@ -1116,13 +1115,79 @@
   $('entFam').addEventListener('click', function () { state.entityTouched = true; setEntity('Family'); }); $('entBiz').addEventListener('click', function () { state.entityTouched = true; setEntity('Business'); });
   $('kindSpent').addEventListener('click', function () { setKind('spent'); }); $('kindGot').addEventListener('click', function () { setKind('got'); });
   $('kindHeld').addEventListener('click', function () { setKind('held'); });
+  /* ---------- Amount keypad: digits plus + − × ÷, like YNAB. The phone's own number pad has no calculator keys. ---------- */
+  var KEYS = [['7', '7'], ['8', '8'], ['9', '9'], ['/', '÷', 'op'], ['4', '4'], ['5', '5'], ['6', '6'], ['*', '×', 'op'], ['1', '1'], ['2', '2'], ['3', '3'], ['-', '−', 'op'], ['L', '000'], ['0', '0'], ['bk', '⌫'], ['+', '+', 'op'], ['=', '=', 'op'], ['done', 'Done', 'done']];
+  $('keypad').innerHTML = KEYS.map(function (k) { return '<button type="button" data-k="' + k[0] + '" class="' + (k[2] || '') + '"' + (k[0] === 'L' ? ' id="kpLeft"' : '') + '>' + k[1] + '</button>'; }).join('');
+  state.expr = '';
+  function isForeign() { return $('addCur').value !== 'IDR' && state.kind === 'spent'; }
+  function renderKeyLeft() { $('kpLeft').textContent = isForeign() ? '.' : '000'; }
+  /** Evaluates 45000+12000×2. × and ÷ first. A trailing sign is ignored. Returns NaN if it makes no sense. */
+  function calc(expr) {
+    var t = String(expr).match(/\d+(?:\.\d*)?|[+\-*\/]/g) || [];
+    if (t.length && /^[+\-*\/]$/.test(t[t.length - 1])) t.pop();
+    if (!t.length || /^[+\-*\/]$/.test(t[0])) return NaN;
+    var a = [Number(t[0])], i, r;
+    for (i = 1; i < t.length; i += 2) {
+      var op = t[i], n = Number(t[i + 1]);
+      if (op === '*') a[a.length - 1] *= n;
+      else if (op === '/') a[a.length - 1] = n === 0 ? NaN : a[a.length - 1] / n;
+      else { a.push(op); a.push(n); }
+    }
+    r = a[0];
+    for (i = 1; i < a.length; i += 2) r = a[i] === '+' ? r + a[i + 1] : r - a[i + 1];
+    return r;
+  }
+  function showExpr(e) {
+    var d = e.replace(/\d+(?:\.\d*)?/g, function (m) { return isForeign() ? m : Number(m).toLocaleString('id-ID'); }).replace(/\*/g, '×').replace(/\//g, '÷').replace(/-/g, '−');
+    $('addAmount').value = d;
+    $('addAmount').style.fontSize = d.length > 16 ? '26px' : d.length > 11 ? '34px' : '';
+  }
+  function setExpr(e) { state.expr = e; showExpr(e); }
+  function press(k) {
+    var e = state.expr, last = e.slice(-1), isOp = function (c) { return /[+\-*\/]/.test(c); };
+    var curNum = (e.match(/[\d.]+$/) || [''])[0];
+    if (/^\d$/.test(k)) { if (curNum === '0') e = e.slice(0, -1); e += k; }
+    else if (k === 'L') {
+      if (isForeign()) { if (curNum.indexOf('.') === -1) e += curNum ? '.' : '0.'; }
+      else if (curNum && curNum !== '0') e += '000';
+    }
+    else if (k === 'bk') e = e.slice(0, -1);
+    else if (isOp(k)) { if (!e) return; e = isOp(last) ? e.slice(0, -1) + k : e + k; }
+    else if (k === '=' || k === 'done') {
+      if (/[+\-*\/]/.test(e)) {
+        var v = calc(e);
+        if (isNaN(v) || v <= 0) { banner('That sum does not give an amount above zero.', true); return; }
+        e = String(isForeign() ? Math.round(v * 100) / 100 : Math.round(v));
+      }
+    }
+    setExpr(e);
+    if (k === 'done') { closeKeypad(); if (!$('addPayee').value) $('addPayee').focus(); }
+  }
+  function openKeypad() { renderKeyLeft(); $('keypad').hidden = false; document.body.classList.add('kp'); }
+  function closeKeypad() { $('keypad').hidden = true; document.body.classList.remove('kp'); }
+  $('keypad').querySelectorAll('[data-k]').forEach(function (b) { b.addEventListener('click', function () { press(b.getAttribute('data-k')); }); });
+  $('addAmount').addEventListener('click', openKeypad);
+  $('addCur').addEventListener('change', openKeypad);
+  /* Tapping any other field puts the keypad away so the phone's keyboard can show. */
+  $('sheet').addEventListener('click', function (ev) { if (!ev.target.closest('.amtwrap') && !ev.target.closest('.seg')) closeKeypad(); });
+  /* A hardware keyboard (iPad) works too. */
+  document.addEventListener('keydown', function (ev) {
+    if ($('keypad').hidden || $('sheet').hidden) return;
+    var k = ev.key;
+    if (/^\d$/.test(k) || /^[+\-*\/]$/.test(k)) press(k);
+    else if (k === '.') press('L');
+    else if (k === 'Backspace') press('bk');
+    else if (k === 'Enter' || k === '=') press('=');
+    else return;
+    ev.preventDefault();
+  });
   $('addSave').addEventListener('click', function () {
-    var cur = $('addCur').value, foreign = cur !== 'IDR' && state.kind === 'spent', rawAmt = $('addAmount').value;
-    var amt = foreign ? Math.round(parseFloat(rawAmt.replace(',', '.')) * 100) / 100 : Number(rawAmt.replace(/[^\d]/g, '')), typedIdr = foreign ? Number($('addIdr').value.replace(/[^\d]/g, '')) : 0, payee = $('addPayee').value.trim(), cat = state.addCat, k = state.kind;
+    var cur = $('addCur').value, foreign = cur !== 'IDR' && state.kind === 'spent', calced = calc(state.expr || '');
+    var amt = foreign ? Math.round(calced * 100) / 100 : Math.round(calced), typedIdr = foreign ? Number($('addIdr').value.replace(/[^\d]/g, '')) : 0, payee = $('addPayee').value.trim(), cat = state.addCat, k = state.kind;
     var m = $('addMsg'); m.textContent = '';
     function fail(msg) { m.textContent = msg; banner(msg, true); }
     var todayIso = localIso().slice(0, 10), dateVal = $('addDate').value || todayIso;
-    if (!amt || isNaN(amt)) return fail('Type the amount as a number.');
+    if (!amt || isNaN(amt) || amt <= 0) return fail('Type the amount as a number above zero.');
     if (!payee) return fail(k === 'got' ? 'Type who it came from.' : 'Type who or what it was for.');
     if (dateVal > todayIso) return fail('The date cannot be in the future.');
     // A spend with no category is allowed. It is saved now and waits in Review for a category.

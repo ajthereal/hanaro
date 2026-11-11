@@ -221,3 +221,13 @@ button.arow:active{background:#F4FAF8}
 .te-sub{font-size:13px;color:var(--muted);text-align:center;margin-bottom:14px}
 
 .field label.chk{display:flex;margin:0}
+
+/* Amount keypad */
+#addAmount{caret-color:transparent;cursor:pointer}
+#keypad{position:fixed;left:0;right:0;bottom:0;max-width:520px;margin:0 auto;background:#fff;border-radius:22px 22px 0 0;box-shadow:0 -6px 24px rgba(14,122,134,.15);z-index:15;padding:10px 12px calc(12px + env(safe-area-inset-bottom));display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+#keypad button{min-height:52px;border:0;background:#F4FAF8;border-radius:14px;font-size:22px;color:var(--text)}
+#keypad button:active{background:var(--sky)}
+#keypad button.op{background:#EEF1FF;color:#2B3FA0;font-size:24px}
+#keypad button.done{grid-column:span 3;background:linear-gradient(90deg,var(--teal),var(--teal2));color:#fff;font-size:16px;font-weight:600}
+body.kp #addSave{display:none}
+body.kp #sheet{padding-bottom:calc(380px + env(safe-area-inset-bottom))}
