@@ -3,12 +3,25 @@
   'use strict';
   var LS = {
     get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
-    set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+    /** Returns false if the phone refused to store it (full). Old copies of data that can be fetched again are cleared to make room, once. */
+    set: function (k, v) {
+      try { localStorage.setItem(k, v); return true; } catch (e) {}
+      try {
+        ['hanaro.cache.payees', 'hanaro.cache.status', 'hanaro.hints', 'hanaro.places'].forEach(function (x) { if (x !== k) localStorage.removeItem(x); });
+        localStorage.setItem(k, v); return true;
+      } catch (e2) { return false; }
+    },
     del: function (k) { try { localStorage.removeItem(k); } catch (e) {} }
   };
   var $ = function (id) { return document.getElementById(id); };
   var state = { pick: { held: false, selected: '', onPick: function () {} }, geo: null, photo: null, token: 0, busy: false, err: false, sync: null, view: 'home', filter: 'all', later: {}, cats: null, accounts: [], kind: 'spent', counts: { review: 0 } };
   /** Rows the person said are NOT the same place as the rest of a group. Kept on this device so a sync does not undo it. */
+  /** "Later" on a card is remembered for the rest of the day, so a refresh does not bring it back. */
+  state.later = (function () {
+    var today = (function () { var d = new Date(); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); })(), o = {};
+    try { var s = JSON.parse(LS.get('hanaro.later') || '{}') || {}; if (s.day === today) o = s.ids || {}; } catch (e) {}
+    state.laterDay = today; return o;
+  })();
   state.notSame = (function () { try { return JSON.parse(LS.get('hanaro.notsame') || '{}') || {}; } catch (e) { return {}; } })();
 
   /* ---------- helpers ---------- */
@@ -37,29 +50,43 @@
     if (m < 1440) return Math.round(m / 60) + ' h ago';
     return Math.round(m / 1440) + ' days ago';
   }
-  var bannerTimer;
-  function banner(msg, bad, ms) {
-    var b = $('banner'); b.textContent = msg; b.className = bad ? 'bad' : ''; b.hidden = false;
-    clearTimeout(bannerTimer);
-    if (ms !== 0) bannerTimer = setTimeout(function () { b.hidden = true; }, ms || (bad ? 7000 : 2500));
+  /**
+   * Small messages that stack at the top and can be dismissed. Same text twice shows once.
+   * ms: 0 stays until closed. act: { label, fn } adds a button (for example Undo).
+   */
+  function banner(msg, bad, ms, act) {
+    var box = $('toasts'), kids = box.children, i, el;
+    for (i = 0; i < kids.length; i++) if (kids[i].getAttribute('data-m') === msg) { clearTimeout(kids[i]._t); el = kids[i]; break; }
+    if (!el) {
+      el = document.createElement('div'); el.setAttribute('data-m', msg);
+      var sp = document.createElement('span'); sp.className = 'tm'; sp.textContent = msg; el.appendChild(sp);
+      if (act) { var ab = document.createElement('button'); ab.type = 'button'; ab.className = 'ta'; ab.textContent = act.label; ab.addEventListener('click', function () { el.remove(); act.fn(); }); el.appendChild(ab); }
+      var x = document.createElement('button'); x.type = 'button'; x.className = 'tx'; x.setAttribute('aria-label', 'Dismiss'); x.textContent = '×'; x.addEventListener('click', function () { clearTimeout(el._t); el.remove(); }); el.appendChild(x);
+      box.appendChild(el);
+      while (box.children.length > 3) box.removeChild(box.firstChild);
+    }
+    el.className = 'toast' + (bad ? ' bad' : '');
+    if (ms !== 0) el._t = setTimeout(function () { el.remove(); }, ms || (bad ? 7000 : 2500));
   }
+  function newId() { var a = new Uint8Array(6); (window.crypto || window.msCrypto).getRandomValues(a); return 't_' + [].map.call(a, function (b) { return ('0' + b.toString(16)).slice(-2); }).join(''); }
 
   /* ---------- API ---------- */
   function conf() { return { url: LS.get('hanaro.url'), key: LS.get('hanaro.key') }; }
+  /** Errors carry what the app should do next: net (no connection), retry (server hiccup, try again), auth (key refused). */
   function api(action, args) {
     var c = conf();
-    if (!c.url || !c.key) return Promise.reject(new Error('This device is not connected yet.'));
+    if (!c.url || !c.key) { var e0 = new Error('This device is not connected yet.'); e0.auth = true; return Promise.reject(e0); }
     var ctl = new AbortController(), t = setTimeout(function () { ctl.abort(); }, 30000);
-    var body = JSON.stringify(Object.assign({ key: c.key, action: action }, args || {}));
+    var body = JSON.stringify(Object.assign({ key: c.key, action: action, today: localIso().slice(0, 10) }, args || {}));
     return fetch(c.url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: body, signal: ctl.signal, redirect: 'follow' })
-      .then(function (r) { return r.json(); }, function () { throw new Error('Cannot reach Hanaro. Check your internet connection.'); })
+      .then(function (r) { return r.json(); }, function () { var e = new Error('Cannot reach Hanaro. Check your internet connection.'); e.net = true; throw e; })
       .then(function (j) {
         clearTimeout(t);
-        if (!j.ok) throw new Error(j.error || 'Something went wrong.');
+        if (!j.ok) { var e = new Error(j.error || 'Something went wrong.'); e.retry = !!j.retry; e.auth = /not recognised/.test(e.message); throw e; }
         return j.data;
       }, function (e) {
         clearTimeout(t);
-        if (e instanceof SyntaxError) throw new Error('Hanaro sent back something unreadable. Check the link is the latest one and that its access is set to Anyone.');
+        if (e instanceof SyntaxError) { var e2 = new Error('Hanaro sent back something unreadable. Check the link is the latest one and that its access is set to Anyone.'); e2.retry = true; throw e2; }
         throw e;
       });
   }
@@ -99,34 +126,72 @@
   function save(k, d) { LS.set('hanaro.cache.' + k, JSON.stringify({ at: Date.now(), d: d })); }
   function patch(k, fn) { var c = snap(k); if (!c) return; fn(c.d); save(k, c.d); }
   function readQueue() { try { return JSON.parse(LS.get('hanaro.queue') || '[]'); } catch (e) { return []; } }
-  var queue = readQueue(), flushing = null, bootP = null;
-  function saveQueue() { LS.set('hanaro.queue', JSON.stringify(queue)); setPill(); }
+  var queue = readQueue(), flushing = null, bootP = null, storageWarned = false;
+  /** The waiting changes are kept on the phone. If the phone is full, receipt photos are dropped from the saved copy first. */
+  function saveQueue() {
+    if (!LS.set('hanaro.queue', JSON.stringify(queue))) {
+      var lean = queue.map(function (q) { if (q.args && q.args.photo) { var a = Object.assign({}, q.args); delete a.photo; return Object.assign({}, q, { args: a, lost: 'photo' }); } return q; });
+      if (!LS.set('hanaro.queue', JSON.stringify(lean)) && !storageWarned) { storageWarned = true; banner('This phone is out of storage. Waiting changes will be lost if you close the app before they send.', true, 0); }
+      else if (!storageWarned) { storageWarned = true; banner('This phone is almost out of storage. A receipt photo will not survive closing the app until it is sent.', true, 0); }
+    }
+    setPill();
+  }
   /** Changes are saved on this device first, then sent. If there is no connection they wait and retry. */
   function send(action, args, label) { queue.push({ action: action, args: args, label: label }); saveQueue(); return flush(); }
+  function hasPhoto(q) { return !!(q.args && q.args.photo); }
+  function failedItem(q, msg) { banner('Could not save ' + (q.label || 'a change') + '. ' + msg + ' Please enter it again.', true, 0); }
+  function gotData(d) { if (d && d.warning) banner(d.warning, true, 0); }
   function flush() {
     if (flushing) return flushing;
-    flushing = (function next() {
-      if (!queue.length) return Promise.resolve(true);
-      var q = queue[0];
-      return api(q.action, q.args).then(function () { queue.shift(); saveQueue(); return next(); }, function (e) {
-        if (/Cannot reach/.test(e.message)) return false;
-        queue.shift(); saveQueue();
-        banner('Could not save ' + (q.label || 'a change') + '. ' + e.message + ' Please enter it again.', true, 0);
-        return next();
-      });
-    })().then(function (ok) { flushing = null; return ok; });
+    flushing = step().then(function (ok) { flushing = null; setPill(); return ok; }, function () { flushing = null; return false; });
     return flushing;
   }
-  function useCats(c) { state.cats = c.categories; state.accounts = c.accounts; state.apiV = c.apiV || 1; }
-  function setWho(u) { if (u) { $('whoName').textContent = u.name; $('avatar').textContent = u.name.slice(0, 2).toUpperCase(); } }
+  /** Sends the oldest waiting change (or a group of up to 30 with a newer server). A change that is refused for a reason a person can fix is dropped with a clear message; anything else stays and is tried again. */
+  function step() {
+    if (!queue.length) { state.flushErr = ''; return Promise.resolve(true); }
+    var group = [];
+    if ((state.apiV || 1) >= 3) for (var i = 0; i < queue.length && group.length < 30; i++) { if (hasPhoto(queue[i])) break; group.push(queue[i]); }
+    if (group.length > 1) {
+      return api('batch', { ops: group.map(function (q) { return Object.assign({ action: q.action, today: localIso().slice(0, 10) }, q.args); }) }).then(function (r) {
+        var done = 0, i2;
+        for (i2 = 0; i2 < group.length; i2++) {
+          var res = r.results[i2];
+          if (!res || (!res.ok && res.retry)) break;
+          done++;
+          if (!res.ok) failedItem(group[i2], res.error); else gotData(res.data);
+        }
+        queue.splice(0, done); saveQueue();
+        if (done < group.length) { state.flushErr = (r.results[done] && r.results[done].error) || ''; return false; }
+        return step();
+      }, onStepError);
+    }
+    var q = queue[0];
+    return api(q.action, q.args).then(function (d) { queue.shift(); saveQueue(); gotData(d); return step(); }, function (e) { return onStepError(e, q); });
+  }
+  function onStepError(e, q) {
+    state.flushErr = e.message;
+    if (e.net || e.auth) return false;
+    if (e.retry) {
+      if (q) { q.tries = (q.tries || 0) + 1; if (q.tries >= 8) { queue.shift(); saveQueue(); failedItem(q, e.message); return step(); } saveQueue(); }
+      return false;
+    }
+    if (q) { queue.shift(); saveQueue(); failedItem(q, e.message); return step(); }
+    return false;
+  }
+  function useCats(c) {
+    state.cats = c.categories; state.accounts = c.accounts; state.apiV = c.apiV || 1;
+    state.accountsFull = c.accountsFull || c.accounts.map(function (a) { return { account: a, type: '', entity: '' }; });
+  }
+  function setWho(u) { if (u) { state.role = u.role; $('whoName').textContent = u.name; $('avatar').textContent = u.name.slice(0, 2).toUpperCase(); } }
   /** One request brings Home, Review, Activity and the category list. */
   function refresh() {
     return flush().then(function () {
-      if (queue.length) throw new Error('Cannot reach Hanaro. Check your internet connection.');
+      if (queue.length) { var qe = state.flushErr && !/Cannot reach/.test(state.flushErr); var e = new Error(qe ? 'Some changes are waiting to be sent: ' + state.flushErr : 'Cannot reach Hanaro. Check your internet connection.'); e.net = !qe; throw e; }
       if (!bootP) bootP = api('bootstrap').then(function (b) {
         ['home', 'review', 'activity', 'categories', 'plan'].forEach(function (k) { if (b[k]) save(k, b[k]); });
         addPlaces(b.activity.items.map(function (t) { return { lat: t.lat, lng: t.lng, payee: t.payee, category: t.category, account: t.account }; }));
         useCats(b.categories); setWho(b.home.user); state.counts.review = b.home.reviewCount; renderNav();
+        state.offline = false; state.offlineSaid = false;
         bootP = null; return b;
       }, function (e) {
         bootP = null;
@@ -136,10 +201,18 @@
       return bootP;
     });
   }
+  var wt;
+  /** After a change was sent, show the server's own numbers once (not once per change). */
+  function afterWrite(ok) {
+    if (!ok || queue.length) return;
+    clearTimeout(wt);
+    wt = setTimeout(function () { if (!queue.length) { bootP = null; render(true); } }, 900);
+  }
   function editing(v) { var a = document.activeElement; return !!(a && v.contains(a) && /INPUT|SELECT|TEXTAREA/.test(a.tagName)); }
+  /** This phone's own clock with its own offset, so an entry made abroad keeps the day it was made on. */
   function localIso() {
-    var d = new Date(), z = function (n) { return (n < 10 ? '0' : '') + n; };
-    return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()) + 'T' + z(d.getHours()) + ':' + z(d.getMinutes()) + ':' + z(d.getSeconds()) + '+07:00';
+    var d = new Date(), z = function (n) { return (n < 10 ? '0' : '') + n; }, o = -d.getTimezoneOffset(), a = Math.abs(o);
+    return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()) + 'T' + z(d.getHours()) + ':' + z(d.getMinutes()) + ':' + z(d.getSeconds()) + (o < 0 ? '-' : '+') + z(Math.floor(a / 60)) + ':' + z(a % 60);
   }
 
   /* ---------- setup ---------- */
@@ -164,21 +237,90 @@
     }).then(function () { $('setupGo').disabled = false; });
   });
 
+  /* ---------- dialogs (in the app, not the browser's own pop-ups) ---------- */
+  /** o: { title, body, input: { value, placeholder, numeric }, actions: [{ label, primary, danger, fn(value) }] }. fn may return false to keep the dialog open. */
+  function dialog(o) {
+    var wrap = $('dlg'); wrap.innerHTML = '';
+    var box = document.createElement('div'); box.className = 'dbox'; box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true');
+    var h = document.createElement('div'); h.className = 'dt'; h.textContent = o.title || ''; box.appendChild(h);
+    if (o.body) { var b = document.createElement('p'); b.className = 'db'; b.textContent = o.body; box.appendChild(b); }
+    var inp = null, msg = null;
+    if (o.input) {
+      inp = document.createElement('input'); inp.className = 'di'; inp.value = o.input.value || ''; inp.placeholder = o.input.placeholder || '';
+      if (o.input.numeric) { inp.setAttribute('inputmode', 'numeric'); inp.addEventListener('input', function () { var d = inp.value.replace(/[^\d]/g, ''); inp.value = d ? Number(d).toLocaleString('id-ID') : ''; }); }
+      box.appendChild(inp);
+      msg = document.createElement('p'); msg.className = 'err'; box.appendChild(msg);
+    }
+    var row = document.createElement('div'); row.className = 'da';
+    function close() { wrap.hidden = true; wrap.innerHTML = ''; document.removeEventListener('keydown', onKey); }
+    function onKey(ev) { if (ev.key === 'Escape') close(); else if (ev.key === 'Enter' && inp && document.activeElement === inp) { var pr = row.querySelector('.primary'); if (pr) pr.click(); } }
+    (o.actions || [{ label: 'OK', primary: true }]).forEach(function (a) {
+      var bt = document.createElement('button'); bt.type = 'button'; bt.textContent = a.label; bt.className = a.primary ? 'primary small' + (a.danger ? ' danger' : '') : 'ghost small';
+      bt.addEventListener('click', function () {
+        var r = a.fn ? a.fn(inp ? inp.value : undefined, function (m) { if (msg) msg.textContent = m; }) : undefined;
+        if (r !== false) close();
+      });
+      row.appendChild(bt);
+    });
+    box.appendChild(row); wrap.appendChild(box); wrap.hidden = false;
+    wrap.onclick = function (ev) { if (ev.target === wrap) close(); };
+    document.addEventListener('keydown', onKey);
+    if (inp) setTimeout(function () { inp.focus(); inp.select(); }, 30);
+  }
+  function confirmBox(text, label, fn, danger) {
+    dialog({ title: 'Are you sure?', body: text, actions: [{ label: 'Cancel' }, { label: label, primary: true, danger: danger, fn: function () { fn(); } }] });
+  }
+  function skeleton() { return '<div class="skel" aria-label="Loading"><div class="sk t"></div><div class="sk c"></div><div class="sk c s"></div><div class="sk c s"></div></div>'; }
+  /** What to show when a screen cannot load or refresh. Offline is said once and quietly; the saved copy stays on screen. */
+  function loadFail(e, tok, v, hadView, retry) {
+    state.busy = false;
+    if (/not recognised/.test(e.message)) { LS.del('hanaro.key'); showSetup(e.message); return; }
+    if (e.net) {
+      state.offline = true; setPill(undefined, false);
+      if (tok !== state.token) return;
+      if (hadView) { if (!state.offlineSaid) { state.offlineSaid = true; banner('You are offline. Showing what was saved. Changes you make are kept and sent later.', false, 3500); } return; }
+    } else {
+      setPill(undefined, true);
+      if (tok !== state.token) return;
+      if (hadView) { banner(e.message, true, 6000); return; }
+    }
+    v.innerHTML = '<div class="card"><div class="label">' + (e.net ? 'You are offline' : 'Could not load') + '</div><p class="note">' + esc(e.message) + '</p><button class="ghost small" id="retry">Try again</button></div>';
+    $('retry').addEventListener('click', retry);
+  }
+  /** A screen that has its own request (reports, accounts, places): saved copy first, refresh behind it, at most every 20 seconds unless forced. */
+  function renderRemote(v, tok, ckey, action, args, paint, force) {
+    var c = snap(ckey);
+    if (c && c.d) paint(v, c.d); else v.innerHTML = skeleton();
+    if (c && !force && !queue.length && Date.now() - c.at < 20000) { setPill(); return; }
+    state.busy = true; setPill();
+    flush().then(function () {
+      if (queue.length) { var e = new Error('Some changes are waiting to be sent.'); e.net = !state.flushErr || /Cannot reach/.test(state.flushErr); throw e; }
+      return api(action, args);
+    }).then(function (d) {
+      save(ckey, d); state.busy = false; state.offline = false; state.offlineSaid = false; setPill(undefined, false);
+      if (tok === state.token && !editing(v)) paint(v, d);
+    }, function (e) {
+      if (/does not know/.test(e.message)) { state.busy = false; setPill(undefined, true); if (tok === state.token) v.innerHTML = '<div class="card"><div class="label">Needs a server update</div><p class="note">This screen needs the newest Hanaro server code. Paste it into the Apps Script project and deploy it again.</p></div>'; return; }
+      loadFail(e, tok, v, !!(c && c.d), function () { render(true); });
+    });
+  }
+
   /* ---------- shell ---------- */
   var ICONS = {
     home: '<path d="M4 11l8-7 8 7v9a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"/>',
     review: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.5"/>',
     activity: '<path d="M4 6h16M4 12h16M4 18h10"/>',
     spending: '<path d="M5 20V10M12 20V4M19 20v-7"/>',
-    status: '<rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/>'
+    status: '<rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/>',
+    accounts: '<rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18M7 15h4"/>'
   };
-  var LABELS = { home: 'HOME', review: 'REVIEW', activity: 'ACTIVITY', spending: 'SPENDING', status: 'STATUS' };
+  var LABELS = { home: 'HOME', review: 'REVIEW', activity: 'ACTIVITY', spending: 'SPENDING', status: 'STATUS', accounts: 'ACCOUNTS' };
   function renderNav() {
     document.querySelectorAll('nav [data-go]').forEach(function (b) {
-      var v = b.getAttribute('data-go'), on = state.view === v || (v === 'status' && state.view === 'payees') ;
+      var v = b.getAttribute('data-go'), on = state.view === v || (v === 'accounts' && (state.view === 'payees' || state.view === 'status')) || (v === 'activity' && state.view === 'review');
       b.className = on ? 'on' : '';
       b.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[v] + '</svg>' +
-        '<span class="lb">' + LABELS[v] + '</span>' + (v === 'review' && state.counts.review ? '<span class="badge">' + state.counts.review + '</span>' : '');
+        '<span class="lb">' + LABELS[v] + '</span>' + (v === 'activity' && state.counts.review ? '<span class="badge">' + state.counts.review + '</span>' : '');
     });
   }
   function setPill(iso, err) {
@@ -186,14 +328,24 @@
     if (err !== undefined) state.err = err;
     var p = $('syncPill'), a = ago(state.sync);
     var stale = !state.sync || (Date.now() - Date.parse(state.sync)) > 2 * 3600 * 1000;
-    if (queue.length) { p.textContent = 'Sending ' + queue.length + '…'; p.className = 'pill'; return; }
+    if (queue.length) { p.textContent = (state.offline ? 'Offline · ' : '') + queue.length + ' waiting'; p.className = 'pill' + (state.flushErr && !state.offline ? ' bad' : ''); return; }
     if (state.busy) { p.textContent = 'Updating…'; p.className = 'pill'; return; }
+    if (state.offline) { p.textContent = 'Offline'; p.className = 'pill'; return; }
     p.textContent = state.err ? 'Not synced' : (a ? 'Synced ' + a : 'No sync yet');
     p.className = 'pill' + (stale || state.err ? ' bad' : '');
   }
+  /** What is waiting to be sent, with a way to try now. */
+  function showQueue() {
+    var n = queue.length;
+    dialog({
+      title: n ? n + ' change' + (n === 1 ? '' : 's') + ' waiting' : 'Offline',
+      body: n ? 'They are saved on this phone and will be sent as soon as Hanaro can be reached.' + (state.flushErr ? ' Last problem: ' + state.flushErr : '') + '\n\n' + queue.slice(0, 6).map(function (q) { return '• ' + (q.label || q.action); }).join('\n') : 'No connection right now. Everything you enter is kept and sent later.',
+      actions: [{ label: 'Try now', primary: true, fn: function () { state.offline = false; bootP = null; render(true); } }, { label: 'Close' }]
+    });
+  }
   function go(v) { state.view = v; renderNav(); render(); window.scrollTo(0, 0); }
   document.querySelectorAll('nav [data-go]').forEach(function (b) { b.addEventListener('click', function () { go(b.getAttribute('data-go')); }); });
-  $('syncPill').addEventListener('click', function () { render(); });
+  $('syncPill').addEventListener('click', function () { if (queue.length || state.offline) { showQueue(); return; } bootP = null; render(true); });
 
   var wideMq = window.matchMedia ? window.matchMedia('(min-width: 1000px)') : { matches: false };
   function wide() { return wideMq.matches; }
@@ -203,37 +355,36 @@
     v.innerHTML = '<div class="board"><div id="bc1"></div><div id="bc2"></div><div id="bc3"></div></div>';
     var h = snap('home'), p = snap('plan'), r = snap('review');
     if (h && usable('home', h)) paintHome($('bc1'), h.d);
-    if (p && usable('spending', p)) paintSpending($('bc2'), p.d);
+    if (p && usable('spending', p)) paintSpending($('bc2'), p.d, true);
     if (r) paintReview($('bc3'), r.d);
   }
   var TITLE = 'font-size:30px;font-weight:300;letter-spacing:-.5px;margin:6px 0 0 2px';
   function usable(name, c) { return c && (name !== 'home' || c.d.spentToday !== undefined) && (name !== 'spending' || c.d.fixed !== undefined); }
-  function render() {
+  function render(force) {
     var v = $('view'), name = state.view, tok = ++state.token;
     v.setAttribute('data-v', name === 'home' && wide() ? 'board' : name);
     if (name === 'home' && wide()) name = 'board';
+    var newServer = (state.apiV || 1) >= 3;
     if (name === 'status') return renderStatus(v, tok);
     if (name === 'payees') return renderPayees(v, tok);
+    if (name === 'accounts') return newServer ? renderAccounts(v, tok, force) : renderStatus(v, tok);
+    if (name === 'spending' && newServer && state.spendTab !== 'plan') {
+      if (!state.spendMonth) state.spendMonth = localIso().slice(0, 7);
+      return renderRemote(v, tok, 'spend_' + state.spendMonth, 'spending', { month: state.spendMonth }, paintReport, force);
+    }
     var paint = { board: paintBoard, home: paintHome, review: paintReview, activity: paintActivity, spending: paintSpending }[name];
     var ck = name === 'spending' ? 'plan' : name === 'board' ? 'home' : name;
     var c = snap(ck); if (!usable(name, c)) c = null;
-    if (c) paint(v, c.d); else v.innerHTML = '<div class="empty">Loading…</div>';
+    if (c) paint(v, c.d); else v.innerHTML = skeleton();
+    if (c && !force && !queue.length && Date.now() - c.at < 20000) { setPill(); return; }
     state.busy = true; setPill();
     refresh().then(function () {
-      state.busy = false; setPill(undefined, false);
+      state.busy = false; state.offline = false; setPill(undefined, false);
       if (tok !== state.token || editing(v)) return;
       var fresh = snap(ck);
       if (!fresh) { v.innerHTML = '<div class="card"><div class="label">Needs a server update</div><p class="note">Hanaro did not send the plan. Paste the newest API code into the Apps Script project and deploy it again, then reopen this screen.</p></div>'; return; }
       paint(v, fresh.d);
-    }, function (e) {
-      state.busy = false; setPill(undefined, true);
-      if (tok !== state.token) return;
-      if (/not recognised/.test(e.message)) { LS.del('hanaro.key'); showSetup(e.message); return; }
-      if (c) { banner(/Cannot reach/.test(e.message) ? 'Offline. Showing what was saved ' + ago(new Date(snap(ck).at).toISOString()) + '.' : e.message, true, 6000); return; }
-      v.innerHTML = '<div class="card"><div class="label">Could not load</div><p class="note">' + esc(e.message) + '</p><button class="ghost small" id="retry">Try again</button></div>';
-      $('retry').addEventListener('click', render);
-      banner(e.message, true);
-    });
+    }, function (e) { loadFail(e, tok, v, !!c, function () { render(true); }); });
   }
 
   /* ---------- Home ---------- */
@@ -263,7 +414,7 @@
     if (h.toPayCount || h.billsWeek.length) {
       html += '<div class="card"><div class="label">Left to pay</div>';
       if (h.toPayCount) html += '<div class="kv"><span>Card charges not paid yet (' + h.toPayCount + ')</span><b>' + rp(h.toPayTotal) + '</b></div>';
-      h.billsWeek.forEach(function (o) { html += '<div class="kv"><span>' + esc(o.name) + '<div class="sub">Due ' + dayLabel(o.due) + '</div></span><span>' + rp(o.amount) + '</span></div>'; });
+      h.billsWeek.forEach(function (o) { html += '<div class="kv"><span>' + esc(o.name) + '<div class="sub' + (o.overdue ? ' warnt' : '') + '">' + (o.overdue ? 'Overdue, was due ' : 'Due ') + dayLabel(o.due) + '</div></span><span>' + rp(o.amount) + '</span></div>'; });
       if (h.toPayCount) html += '<div class="btnrow"><button class="ghost small" data-go-review>See them</button><button class="primary small" data-paid-all>I paid them all</button></div><p class="note">Paid everything in one payment? Hanaro also notices a lump sum by itself when the bank email arrives.</p>';
       html += '</div>';
     }
@@ -280,9 +431,10 @@
     if (pa) pa.addEventListener('click', function () {
       var rc = snap('review'), list = rc ? rc.d.items.filter(function (i) { return i.kind === 'pay_now'; }) : [];
       if (!list.length) { banner('Open Review once so Hanaro can load the charges, then try again.', true); return; }
-      if (!confirm('Mark ' + list.length + ' card charges as paid? Only do this if you already paid them.')) return;
-      applyMany(list, function (i) { return { action: 'mark_paid', args: { id: i.txn.id } }; }, 'paid').then(function () {});
-      var c = snap('home'); if (c) paintHome(v, c.d);
+      confirmBox('Mark ' + list.length + ' card charge' + (list.length === 1 ? '' : 's') + ' as paid? Only do this if you already paid them.', 'Mark as paid', function () {
+        applyMany(list, function (i) { return { action: 'mark_paid', args: { id: i.txn.id } }; }, 'paid').then(function () {});
+        var c = snap('home'); if (c) paintHome(v, c.d);
+      });
     });
   }
 
@@ -295,8 +447,15 @@
     return '<svg width="96" height="36" viewBox="0 0 96 36" role="img" aria-label="This month against last month, running total"><path d="' + path(b) + '" fill="none" stroke="#B7DAD6" stroke-width="2" stroke-linecap="round"/><path d="' + path(a) + '" fill="none" stroke="#0B6F7A" stroke-width="2.5" stroke-linecap="round"/><circle cx="' + ex.toFixed(1) + '" cy="' + ey.toFixed(1) + '" r="3.5" fill="#F28DB0"/></svg>';
   }
   var PM = { '01': 'January', '02': 'February', '03': 'March', '04': 'April', '05': 'May', '06': 'June', '07': 'July', '08': 'August', '09': 'September', '10': 'October', '11': 'November', '12': 'December' };
-  function paintSpending(v, p) {
-    var html = '<div style="' + TITLE + '">Spending</div>';
+  function tabsHtml(on) {
+    if ((state.apiV || 1) < 3) return '';
+    return '<div class="seg tabs" role="tablist"><button data-stab="report" role="tab" class="' + (on === 'report' ? 'on' : '') + '">Report</button><button data-stab="plan" role="tab" class="' + (on === 'plan' ? 'on' : '') + '">Plan</button></div>';
+  }
+  function wireTabs(v) {
+    v.querySelectorAll('[data-stab]').forEach(function (b) { b.addEventListener('click', function () { state.spendTab = b.getAttribute('data-stab'); render(); }); });
+  }
+  function paintSpending(v, p, noTabs) {
+    var html = '<div style="' + TITLE + '">Spending</div>' + (noTabs ? '' : tabsHtml('plan'));
     html += '<div class="card"><div class="label">Planned for ' + PM[p.month.slice(5, 7)] + '</div><div class="big"><span class="rp">Rp</span><span class="n">' + esc(bigParts(p.planned).n) + '</span><span class="z">' + esc(bigParts(p.planned).z) + '</span></div>' +
       '<p class="note">Fixed bills, money set aside for yearly costs, and one flexible number for everything else.</p></div>';
     html += '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Fixed</div><span class="note">' + rpShort(p.fixedTotal) + '</span></div>';
@@ -329,7 +488,7 @@
     }
     html += '<div class="card"><div class="label">Filed for PT AHU</div><p class="note">Everything you filed for the company this month, with receipts, for your accountant. It still counts in your family spending.</p><div id="ptList"></div><button class="ghost" id="ptOpen">Show this month</button></div>';
     html += '<button class="ghost" data-go-activity>See all transactions</button>';
-    v.innerHTML = html;
+    v.innerHTML = html; wireTabs(v);
     v.querySelectorAll('[data-edit]').forEach(function (b) { b.addEventListener('click', function () {
       var k = b.getAttribute('data-edit'), i = Number(b.getAttribute('data-i'));
       openPlan(k, k === 'fixed' ? p.fixed[i] : k === 'nonmonthly' ? p.nonmonthly[i] : p.flexible);
@@ -385,24 +544,156 @@
       if (k === 'fixed') { args.match = $('planMatch').value.trim(); var dd = digits('planDue'); args.dueDay = $('planDue').value.trim() === '' ? '' : dd; if (args.dueDay !== '' && (dd < 1 || dd > 31)) { m.textContent = 'The due day must be from 1 to 31.'; return; } }
     }
     closePlan(); banner('Saved');
-    send('set_plan', args, 'the plan for ' + (args.item || 'Flexible')).then(function (ok) { if (ok && !queue.length) { bootP = null; render(); } });
+    send('set_plan', args, 'the plan for ' + (args.item || 'Flexible')).then(afterWrite);
   });
   $('planPaid').addEventListener('click', function () {
     var p = state.plan; if (!p.row) return;
     var left = Math.max(0, p.row.amount - (p.row.spent || 0));
-    var typed = prompt('How much was paid for ' + p.row.item + '? (Rp)', String(left || p.row.amount));
-    if (typed === null) return;
-    var amt = Number(String(typed).replace(/[^\d]/g, ''));
-    if (!amt) { $('planMsg').textContent = 'Type the amount that was paid as a number.'; return; }
-    closePlan(); banner('Saved');
-    send('plan_paid', { item: p.row.item, amount: amt }, 'marking ' + p.row.item + ' as paid').then(function (ok) { if (ok && !queue.length) { bootP = null; render(); } });
+    dialog({ title: 'How much was paid for ' + p.row.item + '?', input: { value: Number(left || p.row.amount).toLocaleString('id-ID'), numeric: true, placeholder: 'Rp' }, actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, fn: function (val, say) {
+      var amt = Number(String(val).replace(/[^\d]/g, ''));
+      if (!amt) { say('Type the amount that was paid as a number.'); return false; }
+      closePlan(); banner('Saved');
+      send('plan_paid', { item: p.row.item, amount: amt }, 'marking ' + p.row.item + ' as paid').then(afterWrite);
+    } }] });
   });
   $('planRemove').addEventListener('click', function () {
     var p = state.plan; if (!p.row) return;
-    if (!confirm('Remove ' + p.row.item + ' from the plan?')) return;
-    closePlan(); banner('Removed');
-    send('remove_plan', { item: p.row.item, kind: p.kind }, 'removing ' + p.row.item).then(function (ok) { if (ok && !queue.length) { bootP = null; render(); } });
+    confirmBox('Remove ' + p.row.item + ' from the plan?', 'Remove', function () {
+      closePlan(); banner('Removed');
+      send('remove_plan', { item: p.row.item, kind: p.kind }, 'removing ' + p.row.item).then(afterWrite);
+    }, true);
   });
+
+
+  /* ---------- Spending report: where the money went this month ---------- */
+  function monthChip(ym) { return MON[Number(ym.slice(5, 7)) - 1] + ' ' + ym.slice(2, 4); }
+  function dayBars(series, today) {
+    var n = series.length, mx = Math.max.apply(null, series.concat([1])), w = 300, h = 64, bw = w / n, out = '';
+    series.forEach(function (y, i) {
+      var bh = y ? Math.max(2, y / mx * (h - 6)) : 1, isT = today && i + 1 === today;
+      out += '<rect x="' + (i * bw + 1).toFixed(1) + '" y="' + (h - bh).toFixed(1) + '" width="' + Math.max(1, bw - 2).toFixed(1) + '" height="' + bh.toFixed(1) + '" rx="1.5" fill="' + (isT ? '#F28DB0' : y ? '#13867C' : '#DCEBE8') + '"/>';
+    });
+    return '<svg viewBox="0 0 ' + w + ' ' + h + '" width="100%" height="64" preserveAspectRatio="none" role="img" aria-label="Spending for each day of the month">' + out + '</svg><div class="axis"><span>1</span><span>' + Math.round(n / 2) + '</span><span>' + n + '</span></div>';
+  }
+  function paintReport(v, d) {
+    var isNow = d.month === localIso().slice(0, 7), todayN = isNow ? Number(localIso().slice(8, 10)) : 0;
+    var html = '<div style="' + TITLE + '">Spending</div>' + tabsHtml('report');
+    html += '<div class="chips" id="mchips">' + d.months.slice(0, 14).map(function (m) { return '<button class="chip' + (m === d.month ? ' on' : '') + '" data-month="' + m + '">' + monthChip(m) + '</button>'; }).join('') + '</div>';
+    var b = bigParts(d.total);
+    html += '<div class="card"><div class="label">Spent in ' + PM[d.month.slice(5, 7)] + '</div><div class="big"><span class="rp">Rp</span><span class="n">' + esc(b.n) + '</span><span class="z">' + esc(b.z) + '</span></div>';
+    if (!d.empty) {
+      html += '<div class="note">About ' + rp(d.avgPerDay) + ' a day.' + (d.fromHistory ? ' From your YNAB history.' : '') + '</div>';
+      if (isNow && d.compare && d.compare.hasPrev) html += '<div style="font-size:14px;font-weight:600;margin-top:4px">' + (d.compare.diff >= 0 ? rpShort(d.compare.diff) + ' less' : rpShort(-d.compare.diff) + ' more') + ' than ' + PM[d.compare.prevMonth.slice(5, 7)] + ' at this point</div>';
+      if (!d.fromHistory) html += '<div class="rule"></div>' + dayBars(d.series, todayN);
+    }
+    html += '</div>';
+    if (d.empty) html += '<div class="card empty">Nothing spent in ' + PM[d.month.slice(5, 7)] + ' yet.</div>';
+    d.groups.forEach(function (g) {
+      html += '<div class="card" style="gap:2px"><div class="cardhead"><div class="label">' + esc(g.group) + '</div><span class="note"><b>' + rpShort(g.amount) + '</b> · ' + (d.total ? Math.round(g.amount / d.total * 100) : 0) + '%</span></div>';
+      g.categories.forEach(function (c) {
+        html += '<button class="crow" data-cat="' + esc(c.category) + '"><span class="cn"><span class="p">' + esc(c.category) + '</span><span class="s">' + (c.count ? c.count + ' purchase' + (c.count === 1 ? '' : 's') : '') + '</span></span><span class="cv">' + rp(c.amount) + '<span class="cbar"><span style="width:' + Math.max(2, c.pct) + '%"></span></span></span></button>';
+      });
+      html += '</div>';
+    });
+    if (d.business && d.business.total) {
+      html += '<div class="card"><div class="cardhead"><div class="label">Business</div><span class="note"><b>' + rpShort(d.business.total) + '</b></span></div><p class="note">Spending on company accounts and what you filed for PT AHU. Receipts filed for the company are also in your family spending above.</p>' +
+        d.business.categories.slice(0, 8).map(function (c) { return '<div class="kv"><span>' + esc(c.category) + '</span><span>' + rp(c.amount) + '</span></div>'; }).join('') + '</div>';
+    }
+    if (d.biggest && d.biggest.length > 1) {
+      html += '<div class="card"><div class="label">Biggest purchases</div>' + d.biggest.map(function (t) { return '<div class="kv"><span>' + esc(t.payee || '(no name)') + '<div class="sub">' + dayLabel(t.date) + ' · ' + esc(t.category || 'No category') + '</div></span><span>' + rp(t.amount) + '</span></div>'; }).join('') + '</div>';
+    }
+    v.innerHTML = html; wireTabs(v);
+    v.querySelectorAll('[data-month]').forEach(function (b) { b.addEventListener('click', function () { state.spendMonth = b.getAttribute('data-month'); render(); }); });
+    v.querySelectorAll('[data-cat]').forEach(function (b) { b.addEventListener('click', function () { state.actCat = b.getAttribute('data-cat'); state.actFilter = 'All'; state.actQ = ''; state.actSearchOn = false; go('activity'); }); });
+    var act = v.querySelector('#mchips .on'); if (act && act.scrollIntoView) { try { act.scrollIntoView({ inline: 'center', block: 'nearest' }); } catch (e) {} }
+  }
+
+  /* ---------- Accounts: banks, cards, debts, net worth ---------- */
+  function ageWord(days) { return days === null ? 'No balance yet' : days === 0 ? 'Updated today' : days === 1 ? 'Updated yesterday' : 'Updated ' + days + ' days ago'; }
+  function recalcAccounts(d) {
+    var held = d.held || 0, cash = 0, owe = 0;
+    d.banks.forEach(function (b) { if (b.entity !== 'PT' && b.balance !== null) cash += b.balance; });
+    d.debts.forEach(function (x) { if (x.entity !== 'PT' && x.balance !== null) owe += x.balance; });
+    d.cash = cash; d.owe = owe; d.netWorth = cash - held - owe;
+  }
+  function renderAccounts(v, tok, force) {
+    renderRemote(v, tok, 'accounts', 'accounts', {}, paintAccounts, force);
+  }
+  function paintAccounts(v, d) {
+    var owner = state.role === 'owner';
+    var html = '<div style="' + TITLE + '">Accounts</div>';
+    var nb = bigParts(Math.abs(d.netWorth));
+    html += '<div class="card"><div class="label">Net worth</div><div class="big"><span class="rp">' + (d.netWorth < 0 ? '−Rp' : 'Rp') + '</span><span class="n">' + esc(nb.n) + '</span><span class="z">' + esc(nb.z) + '</span></div>' +
+      '<div class="rule"></div><div class="kv"><span>In your accounts</span><span>' + rp(d.cash) + '</span></div>' +
+      (d.held ? '<div class="kv"><span>Held for others</span><span>−' + rp(d.held) + '</span></div>' : '') +
+      '<div class="kv"><span>Debts</span><span>−' + rp(d.owe) + '</span></div>' +
+      (d.note ? '<p class="note" style="margin-top:6px;color:var(--warn)">' + esc(d.note) + '</p>' : '<p class="note" style="margin-top:6px">Company (PT) accounts and debts are not counted. Money held for others is taken off.</p>') + '</div>';
+    html += '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Bank accounts</div></div>';
+    d.banks.forEach(function (b, i) {
+      var old = b.ageDays !== null && b.ageDays >= 3;
+      html += '<button class="prow2" data-bank="' + i + '"' + (owner ? '' : ' disabled') + '><span class="l"><span class="p">' + esc(b.account) + (b.entity === 'PT' ? ' <span class="tag gray">PT AHU</span>' : '') + '</span><span class="s' + (old || b.balance === null ? ' warnt' : '') + '">' + ageWord(b.ageDays) + '</span></span><span class="r">' + (b.balance === null ? '<span class="muted">Set</span>' : rp(b.balance)) + '</span></button>';
+    });
+    if (!d.banks.length) html += '<p class="note" style="padding:10px 0 0">No bank accounts yet.</p>';
+    if (owner) html += '<p class="note" style="padding-top:8px">Tap an account to type what it shows today.</p>';
+    html += '</div>';
+    if (d.debts.length) {
+      var intr = d.debts.reduce(function (a, x) { return a + (x.monthlyInterest || 0); }, 0);
+      html += '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Debts</div><span class="note">' + rpShort(d.owe) + ' left</span></div>';
+      d.debts.forEach(function (x, i) {
+        var bits = []; if (x.rate !== null) bits.push(Math.round(x.rate * 1000) / 10 + '% a year'); if (x.minimum) bits.push('minimum ' + rpShort(x.minimum) + (x.dueDay ? ' on the ' + x.dueDay + 'th' : ''));
+        html += '<button class="prow2" data-debt="' + i + '"' + (owner ? '' : ' disabled') + '><span class="l"><span class="p">' + esc(x.debt) + (d.payFirst === x.debt ? ' <span class="tag pay">PAY FIRST</span>' : '') + '</span><span class="s">' + esc(bits.join(' · ') || 'No terms set') + '</span></span><span class="r">' + (x.balance === null ? '<span class="muted">Set</span>' : rp(x.balance)) + '</span></button>';
+      });
+      if (intr) html += '<p class="note" style="padding-top:8px">Interest costs about ' + rp(intr) + ' a month in total.' + (d.payFirst ? ' After the minimums, extra money does the most good on ' + esc(d.payFirst) + ' (highest interest).' : '') + '</p>';
+      if (owner) html += '<p class="note" style="padding-top:4px">Tap a debt to type what is left.</p>';
+      html += '</div>';
+    }
+    html += '<div id="health"></div>';
+    html += '<div class="card"><div class="label">Places and payees</div><p class="note">See where you spend and set the default category for each place.</p><button class="ghost small" id="openPlaces">Open places</button></div>';
+    html += '<div class="card"><div class="label">This device</div><p class="note">The link and key are stored on this device only.</p><button class="link" id="signOut">Disconnect this device</button></div>';
+    v.innerHTML = html;
+    v.querySelectorAll('[data-bank]').forEach(function (b) { b.addEventListener('click', function () {
+      var x = d.banks[Number(b.getAttribute('data-bank'))];
+      dialog({ title: x.account, body: 'What does this account show right now?', input: { numeric: true, placeholder: 'Rp', value: x.balance !== null ? Number(x.balance).toLocaleString('id-ID') : '' }, actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, fn: function (val, say) {
+        var amt = Number(String(val).replace(/[^\d]/g, '')); if (val === '' || isNaN(amt)) { say('Type the balance as a number.'); return false; }
+        patch('accounts', function (dd) { dd.banks.forEach(function (y) { if (y.account === x.account) { y.balance = amt; y.ageDays = 0; } }); recalcAccounts(dd); });
+        var cc = snap('accounts'); if (cc) paintAccounts(v, cc.d);
+        banner('Saved'); send('set_balance', { account: x.account, amount: amt }, 'the balance of ' + x.account).then(afterWrite);
+      } }] });
+    }); });
+    v.querySelectorAll('[data-debt]').forEach(function (b) { b.addEventListener('click', function () {
+      var x = d.debts[Number(b.getAttribute('data-debt'))];
+      dialog({ title: x.debt, body: 'How much is left to pay on this?', input: { numeric: true, placeholder: 'Rp', value: x.balance !== null ? Number(x.balance).toLocaleString('id-ID') : '' }, actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, fn: function (val, say) {
+        var amt = Number(String(val).replace(/[^\d]/g, '')); if (val === '' || isNaN(amt)) { say('Type what is left as a number.'); return false; }
+        patch('accounts', function (dd) { dd.debts.forEach(function (y) { if (y.debt === x.debt) y.balance = amt; }); recalcAccounts(dd); });
+        var cc = snap('accounts'); if (cc) paintAccounts(v, cc.d);
+        banner('Saved'); send('set_debt', { debt: x.debt, balance: amt }, 'what is left on ' + x.debt).then(afterWrite);
+      } }] });
+    }); });
+    $('openPlaces').addEventListener('click', function () { go('payees'); });
+    $('signOut').addEventListener('click', disconnect);
+    loadHealth();
+  }
+  function disconnect() {
+    confirmBox('Disconnect this device from Hanaro? Changes still waiting to be sent will be lost.', 'Disconnect', function () {
+      ['key', 'url', 'queue', 'lastsync'].forEach(function (k) { LS.del('hanaro.' + k); });
+      ['home', 'review', 'activity', 'categories', 'status', 'plan', 'accounts', 'payees'].forEach(function (k) { LS.del('hanaro.cache.' + k); });
+      location.reload();
+    }, true);
+  }
+  /** Email sync and backup, from the same Status request as before, shown at the bottom of Accounts. */
+  function loadHealth() {
+    function paintH(s) {
+      var el = $('health'); if (!el) return;
+      LS.set('hanaro.lastsync', s.lastSync || ''); setPill(s.lastSync);
+      var stale = !s.lastSync || (Date.now() - Date.parse(s.lastSync)) > 2 * 3600 * 1000;
+      el.innerHTML = '<div class="card"><div class="label">Bank emails</div><div class="kv"><span><span class="dot' + (stale ? ' bad' : '') + '"></span>' + (s.lastSync ? 'Last read ' + esc(ago(s.lastSync)) : 'No emails read yet') + '</span></div>' +
+        (s.lastSyncError ? '<p class="note" style="color:var(--warn)">Last error: ' + esc(s.lastSyncError) + '</p>' : '') +
+        '<div class="kv"><span>Emails Hanaro could not read</span><b>' + s.unreadable + '</b></div><div class="kv"><span>Last backup</span><span>' + esc(s.lastBackup ? ago(s.lastBackup) : 'none yet') + '</span></div>' +
+        (s.senders && s.senders.length ? '<div class="rule"></div>' + s.senders.map(function (x) { return '<div class="kv"><span>' + esc(x.sender) + '</span><span class="muted">' + esc(ago(x.last)) + '</span></div>'; }).join('') : '') + '</div>';
+    }
+    var c = snap('status'); if (c) paintH(c.d);
+    api('status').then(function (s) { save('status', s); paintH(s); }, function () {});
+  }
 
   /* ---------- categories ---------- */
   function ensureCats() {
@@ -533,16 +824,17 @@
     });
     items.forEach(function (i) { var c = makeCall(i); queue.push({ action: c.action, args: c.args, label: rp(i.txn.amount || 0) + ' ' + (i.txn.payee || '') }); });
     saveQueue(); banner('Saved ' + items.length);
-    return flush().then(function (ok) { return (hold || Promise.resolve()).then(function () { if (ok && !queue.length) render(); }); });
+    return flush().then(function (ok) { return (hold || Promise.resolve()).then(function () { afterWrite(ok); }); });
   }
   function bulkAction(btn, v, shown) {
     var kind = btn.getAttribute('data-bulk');
     if (kind === 'paid') {
       var list = shown.filter(function (i) { return i.kind === 'pay_now'; });
-      if (!confirm('Mark ' + list.length + ' card charges as paid? Only do this if you already paid them.')) return;
-      var hold1 = playDone([btn.closest('.card')]);
-      applyMany(list, function (i) { return { action: 'mark_paid', args: { id: i.txn.id } }; }, 'paid', hold1);
-      hold1.then(function () { repaintReview(v); });
+      confirmBox('Mark ' + list.length + ' card charges as paid? Only do this if you already paid them.', 'Mark as paid', function () {
+        var hold1 = playDone([btn.closest('.card')]);
+        applyMany(list, function (i) { return { action: 'mark_paid', args: { id: i.txn.id } }; }, 'paid', hold1);
+        hold1.then(function () { repaintReview(v); });
+      });
     } else {
       var ready = shown.filter(function (i) { return i.kind === 'confirm' && i.txn.category; });
       var ids = {}; ready.forEach(function (i) { ids[i.txn.id] = true; });
@@ -581,7 +873,7 @@
     } else {
       h += '<div class="item-top"><div class="p">' + esc(t.payee) + '</div>' + amt + '</div><div class="sub">' + esc(when(t.timestamp)) + ' · ' + esc(t.account) + '</div>' +
         catBtn(t.category, ' data-f-cat') + '<p class="err" data-err></p>' +
-        '<div class="btnrow"><button class="primary small" data-act="confirm" data-id="' + id + '">Confirm</button></div>';
+        '<div class="btnrow">' + (t.type === 'transfer' && (state.apiV || 1) >= 3 ? '<button class="ghost small" data-act="own_transfer" data-id="' + id + '">My own transfer</button>' : '') + '<button class="primary small" data-act="confirm" data-id="' + id + '">Confirm</button></div>';
     }
     return h + '</div>';
   }
@@ -590,7 +882,7 @@
     var err = card.querySelector('[data-err]');
     function fail(m) { if (err) err.textContent = m; else banner(m, true); }
     if (err) err.textContent = '';
-    if (act === 'later') { state.later[id] = true; repaintReview(v); return; }
+    if (act === 'later') { state.later[id] = true; LS.set('hanaro.later', JSON.stringify({ day: state.laterDay, ids: state.later })); repaintReview(v); return; }
     var action, args, label = 'that change';
     if (act === 'paid') {
       action = 'mark_paid'; args = { id: id };
@@ -599,6 +891,7 @@
       pcat = pcat ? pcat.getAttribute('data-val') : '';
       if (pcat) queue.push({ action: 'update_txn', args: { id: id, changes: { category: pcat }, confirm: true }, label: 'the category' }), saveQueue();
     }
+    else if (act === 'own_transfer') { action = 'update_txn'; args = { id: id, changes: { category: 'Own transfer' }, confirm: true }; }
     else if (act === 'keep_both') { action = 'keep_both'; args = { id: id }; }
     else if (act === 'merge_dup') { action = 'merge_dup'; args = { id: id }; }
     else {
@@ -624,7 +917,7 @@
     banner('Saved');
     var hold = playDone([card]);
     hold.then(function () { repaintReview(v); });
-    send(action, args, label).then(function (ok) { return hold.then(function () { if (ok && !queue.length) render(); }); });
+    send(action, args, label).then(function (ok) { return hold.then(function () { afterWrite(ok); }); });
   }
 
   /* ---------- Activity ---------- */
@@ -656,7 +949,7 @@
     return h;
   }
   function actRow(t) {
-    var plus = t.type === 'income' || t.type === 'held_in', edit = t.type === 'purchase';
+    var plus = t.type === 'income' || t.type === 'held_in', edit = true;
     var amt = t.amount === null ? '–' : (plus ? '+' : '−') + rp(t.amount);
     var fx = t.origCurrency && t.origCurrency !== 'IDR' && t.origAmount !== null ? '<div class="ac">' + esc(t.origCurrency) + ' ' + Number(t.origAmount).toFixed(2) + (t.est ? ' · est.' : '') + '</div>' : '';
     var inner = '<div class="al"><div class="ap">' + esc(t.payee || '(no name)') + '</div><div class="achips">' + actPill(t) + actTags(t) + '</div></div>' +
@@ -668,11 +961,12 @@
     var q = (state.actQ || '').toLowerCase().trim(), fsel = state.actFilter || 'All';
     var items = d.items.filter(function (t) {
       if (fsel !== 'All' && t.by !== fsel) return false;
+      if (state.actCat && t.category !== state.actCat) return false;
       if (q && [t.payee, t.category, t.account, t.memo, t.by].join(' ').toLowerCase().indexOf(q) === -1) return false;
       return true;
     }).sort(function (a, b) { return String(b.date).localeCompare(String(a.date)) || String(b.timestamp).localeCompare(String(a.timestamp)); });
     var html = '';
-    if (!items.length) html = '<div class="card empty">' + (q ? 'Nothing matches "' + esc(state.actQ) + '".' : d.items.length ? 'Nothing for ' + fsel + ' in the latest transactions.' : 'Nothing yet.') + '</div>';
+    if (!items.length) html = '<div class="card empty">' + (q ? 'Nothing matches "' + esc(state.actQ) + '".' : state.actCat ? 'Nothing in ' + esc(state.actCat) + ' among the latest transactions.' : d.items.length ? 'Nothing for ' + fsel + ' in the latest transactions.' : 'Nothing yet.') + '</div>';
     else {
       var last = '';
       html = '<div class="acard">';
@@ -690,9 +984,11 @@
     var html = '<div class="acthead"><div style="' + TITLE + '">Activity</div><button type="button" id="actSearchBtn" class="roundx" aria-label="Search"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></button></div>';
     if (state.actSearchOn) html += '<input id="actQ" type="search" placeholder="Search payee, category or account" autocomplete="off" value="' + esc(state.actQ || '') + '">';
     if (n) html += '<div class="inbox"><span class="cnt">' + n + '</span><span class="it">New transactions</span><button type="button" class="rv" data-go-review>Review</button></div>';
+    if (state.actCat) html += '<div class="chips"><button class="chip on" data-clearcat>' + esc(state.actCat) + ' ×</button></div>';
     html += '<div class="chips">' + FILTERS.map(function (f) { return '<button class="chip' + (f === fsel ? ' on' : '') + '" data-actf="' + f + '">' + f + '</button>'; }).join('') + '</div><div id="actList"></div>';
     v.innerHTML = html;
     fillActList(v, d);
+    v.querySelectorAll('[data-clearcat]').forEach(function (b) { b.addEventListener('click', function () { state.actCat = ''; paintActivity(v, d); }); });
     v.querySelectorAll('[data-actf]').forEach(function (b) { b.addEventListener('click', function () { state.actFilter = b.getAttribute('data-actf'); paintActivity(v, d); }); });
     v.querySelectorAll('[data-go-review]').forEach(function (b) { b.addEventListener('click', function () { go('review'); }); });
     $('actSearchBtn').addEventListener('click', function () {
@@ -702,18 +998,29 @@
     if ($('actQ')) $('actQ').addEventListener('input', function () { state.actQ = $('actQ').value; fillActList(v, d); });
   }
 
-  /* ---------- Open one purchase: change category, Family or Business, PT AHU, memo, receipt ---------- */
-  var te = { t: null, cat: '', ent: 'Family', entTouched: false, photo: null };
+  /* ---------- Open one entry: change what was typed, fix amount, date, account, who; delete with undo ---------- */
+  var te = { t: null, cat: '', ent: 'Family', entTouched: false, photo: null, who: '', acc: '' };
   function setTeCat(name) { te.cat = name || ''; var el = $('teCatVal'); el.textContent = name ? name.replace(/^Held:\s*/, 'Held: ') : 'Choose'; el.className = 'fv' + (name ? '' : ' empty'); }
   function setTeEnt(e) { te.ent = e; $('teFam').className = e === 'Family' ? 'on' : ''; $('teBiz').className = e === 'Business' ? 'on' : ''; }
+  function setTeWho(w) { te.who = w; $('teAJ').className = w === 'AJ' ? 'on' : ''; $('teCyn').className = w === 'Cynthia' ? 'on' : ''; }
+  function setTeAcc(a) { te.acc = a || ''; $('teAccVal').textContent = a || 'Not sure'; }
+  function findTxnLocal(id) { var c = snap('activity'); return c && c.d.items.filter(function (x) { return x.id === id; })[0]; }
   function openTxnEdit(id) {
-    var c = snap('activity'), t = c && c.d.items.filter(function (x) { return x.id === id; })[0];
+    var t = findTxnLocal(id);
     if (!t) return;
-    if (String(t.id).indexOf('local_') === 0) { banner('This one is still being sent. Open it again in a moment.'); return; }
-    te = { t: t, cat: t.category || '', ent: t.entity === 'Business' ? 'Business' : 'Family', entTouched: false, photo: null };
-    $('teAmt').textContent = t.amount === null ? '–' : rp(t.amount);
-    $('teSub').textContent = bandLabel(t.date) + ' · ' + (t.account || 'No account') + (t.origCurrency && t.origCurrency !== 'IDR' && t.origAmount !== null ? ' · ' + t.origCurrency + ' ' + Number(t.origAmount).toFixed(2) : '');
-    $('tePayee').value = t.payee || ''; $('teMemo').value = t.memo || '';
+    var v3 = (state.apiV || 1) >= 3, manual = t.source === 'manual', canAmt = v3 && (manual || t.est), canDate = v3 && manual, canAcct = v3 && manual;
+    var spendish = t.type === 'purchase' || t.type === 'held_in' || t.type === 'held_out', named = t.type === 'purchase' || t.type === 'income' || t.type === 'held_in' || t.type === 'held_out';
+    te = { t: t, cat: t.category || '', ent: t.entity === 'Business' ? 'Business' : 'Family', entTouched: false, photo: null, who: '', acc: t.account || '', canAmt: canAmt, canDate: canDate, canAcct: canAcct };
+    $('teAmt').textContent = t.amount === null ? '–' : (t.type === 'income' || t.type === 'held_in' ? '+' : '−') + rp(t.amount);
+    $('teSub').textContent = bandLabel(t.date) + ' · ' + (t.account || 'No account') + (t.origCurrency && t.origCurrency !== 'IDR' && t.origAmount !== null ? ' · ' + t.origCurrency + ' ' + Number(t.origAmount).toFixed(2) : '') + (t.source === 'email' ? ' · from the bank email' : '');
+    $('teAmtWrap').hidden = !canAmt; $('teAmtIn').value = t.amount ? Number(t.amount).toLocaleString('id-ID') : '';
+    $('teAmtLabel').textContent = t.est ? 'Real rupiah amount from your card statement' : 'Amount (Rp)';
+    $('tePayeeWrap').hidden = !named; $('tePayee').value = t.payee || ''; $('teMemo').value = t.memo || '';
+    $('teCat').hidden = !spendish; $('teEntWrap').hidden = t.type !== 'purchase'; $('tePtWrap').hidden = t.type !== 'purchase'; $('tePhotoWrap').hidden = !spendish;
+    $('teAcc').hidden = !canAcct; setTeAcc(t.account);
+    $('teDateWrap').hidden = !canDate; $('teDate').value = t.date; $('teDate').max = localIso().slice(0, 10);
+    $('teWhoWrap').hidden = !(v3 && manual); setTeWho(t.who === 'AJ' || t.who === 'Cynthia' ? t.who : '');
+    $('teDelete').hidden = !v3;
     setTeCat(te.cat); setTeEnt(te.ent); $('tePt').checked = !!t.ptFile;
     $('tePhoto').textContent = t.receipt ? 'Receipt saved ✓ · Replace' : 'Add receipt photo'; $('tePhotoThumb').hidden = true; $('teMsg').textContent = '';
     $('txnEdit').hidden = false; $('txnEdit').scrollTop = 0;
@@ -721,9 +1028,16 @@
   $('teBack').addEventListener('click', function () { $('txnEdit').hidden = true; });
   $('teFam').addEventListener('click', function () { te.entTouched = true; setTeEnt('Family'); });
   $('teBiz').addEventListener('click', function () { te.entTouched = true; setTeEnt('Business'); });
+  $('teAJ').addEventListener('click', function () { setTeWho('AJ'); });
+  $('teCyn').addEventListener('click', function () { setTeWho('Cynthia'); });
+  $('teAmtIn').addEventListener('input', function () { var d = $('teAmtIn').value.replace(/[^\d]/g, ''); $('teAmtIn').value = d ? Number(d).toLocaleString('id-ID') : ''; });
+  $('teAcc').addEventListener('click', function () {
+    openPicker({ items: accItems('any'), selected: te.acc, title: 'Account', onPick: function (v) { setTeAcc(v); } });
+  });
   $('teCat').addEventListener('click', function () {
     ensureCats().then(function () {
-      openPicker({ held: false, selected: te.cat, title: 'Category', noNew: true, payee: $('tePayee').value, onPick: function (name) { setTeCat(name); } });
+      var held = te.t && (te.t.type === 'held_in' || te.t.type === 'held_out');
+      openPicker({ held: held, selected: te.cat, title: 'Category', noNew: true, payee: $('tePayee').value, onPick: function (name) { setTeCat(name); } });
     }, function (e) { banner(e.message, true); });
   });
   $('tePhoto').addEventListener('click', function () { $('tePhotoIn').click(); });
@@ -735,15 +1049,28 @@
   });
   $('teSave').addEventListener('click', function () {
     var t = te.t; if (!t) return;
-    var payee = $('tePayee').value.trim(), memo = $('teMemo').value.trim(), pt = $('tePt').checked, ch = {};
-    if (!payee) { $('teMsg').textContent = 'Type who or what it was for.'; return; }
-    if (payee !== (t.payee || '')) ch.payee = payee;
-    if (te.cat && te.cat !== (t.category || '')) ch.category = te.cat;
+    var named = !$('tePayeeWrap').hidden, payee = $('tePayee').value.trim(), memo = $('teMemo').value.trim(), pt = $('tePt').checked, ch = {};
+    if (named && !payee) { $('teMsg').textContent = 'Type who or what it was for.'; return; }
+    if (named && payee !== (t.payee || '')) ch.payee = payee;
+    if (!$('teCat').hidden && te.cat && te.cat !== (t.category || '')) ch.category = te.cat;
     if (memo !== (t.memo || '')) ch.memo = memo;
-    if (te.entTouched && te.ent !== (t.entity === 'Business' ? 'Business' : (t.entity || 'Family'))) ch.entity = te.ent;
-    if (pt !== !!t.ptFile) ch.pt_file = pt ? 'Y' : '';
+    if (!$('teEntWrap').hidden) {
+      if (te.entTouched && te.ent !== (t.entity === 'Business' ? 'Business' : (t.entity || 'Family'))) ch.entity = te.ent;
+      if (pt !== !!t.ptFile) ch.pt_file = pt ? 'Y' : '';
+    }
+    if (te.canAmt) {
+      var na = Number($('teAmtIn').value.replace(/[^\d]/g, ''));
+      if (!na) { $('teMsg').textContent = 'Type the amount as a number above zero.'; return; }
+      if (na !== t.amount) ch.idr_amount = na;
+    }
+    if (te.canDate && $('teDate').value && $('teDate').value !== t.date) {
+      if ($('teDate').value > localIso().slice(0, 10)) { $('teMsg').textContent = 'The date cannot be in the future.'; return; }
+      ch.date = $('teDate').value;
+    }
+    if (te.canAcct && te.acc !== (t.account || '')) ch.account = te.acc;
+    if (!$('teWhoWrap').hidden && te.who && te.who !== t.who) ch.who = te.who;
     // Saving a new transaction that has a category also confirms it, so it leaves Review.
-    var confirm = t.status === 'auto' && !!te.cat, photo = te.photo, id = t.id;
+    var confirm = t.status === 'auto' && !!(te.cat || t.category) && (t.type === 'purchase'), photo = te.photo, id = t.id;
     if (!Object.keys(ch).length && !confirm && !photo) { $('txnEdit').hidden = true; return; }
     patch('activity', function (d) {
       d.items.forEach(function (x) {
@@ -753,6 +1080,10 @@
         if (ch.memo !== undefined) x.memo = ch.memo;
         if (ch.entity !== undefined) x.entity = ch.entity;
         if (ch.pt_file !== undefined) x.ptFile = ch.pt_file === 'Y';
+        if (ch.idr_amount !== undefined) { x.amount = ch.idr_amount; x.est = false; }
+        if (ch.date !== undefined) { x.date = ch.date; x.timestamp = ch.date + 'T12:00:00' + x.timestamp.slice(-6); }
+        if (ch.account !== undefined) x.account = ch.account;
+        if (ch.who !== undefined) { x.who = ch.who; x.by = ch.who; }
         if (confirm) x.status = 'confirmed';
         if (photo) x.receipt = true;
       });
@@ -764,8 +1095,24 @@
     }
     $('txnEdit').hidden = true; banner('Saved');
     var c2 = snap('activity'); if (c2 && state.view === 'activity') paintActivity($('view'), c2.d);
-    if (Object.keys(ch).length || confirm) send('update_txn', { id: id, changes: ch, confirm: confirm || undefined }, 'the changes to ' + payee).then(function (ok) { if (ok && !queue.length) render(); });
-    if (photo) send('attach_photo', { id: id, photo: photo }, 'the receipt photo').then(function (ok) { if (ok && !queue.length) render(); });
+    if (Object.keys(ch).length || confirm) send('update_txn', { id: id, changes: ch, confirm: confirm || undefined }, 'the changes to ' + (t.payee || 'an entry')).then(afterWrite);
+    if (photo) send('attach_photo', { id: id, photo: photo }, 'the receipt photo').then(afterWrite);
+  });
+  /** Delete hides the entry everywhere. It stays in the history, and Undo brings it back. */
+  function deleteTxn(t) {
+    patch('activity', function (d) { d.items = d.items.filter(function (x) { return x.id !== t.id; }); });
+    patch('review', function (d) { d.items = d.items.filter(function (i) { return i.txn.id !== t.id; }); });
+    var c = snap('activity'); if (c && state.view === 'activity') paintActivity($('view'), c.d);
+    banner('Deleted ' + (t.payee || 'the entry'), false, 7000, { label: 'Undo', fn: function () {
+      patch('activity', function (d) { d.items.unshift(t); });
+      var c2 = snap('activity'); if (c2 && state.view === 'activity') paintActivity($('view'), c2.d);
+      send('restore_txn', { id: t.id }, 'undoing the delete').then(afterWrite);
+    } });
+    send('void_txn', { id: t.id }, 'deleting ' + (t.payee || 'an entry')).then(afterWrite);
+  }
+  $('teDelete').addEventListener('click', function () {
+    var t = te.t; if (!t) return;
+    confirmBox('Delete ' + (t.payee || 'this entry') + (t.amount ? ' (' + rp(t.amount) + ')' : '') + '? It disappears from your totals. You can undo it right after.', 'Delete', function () { $('txnEdit').hidden = true; deleteTxn(t); }, true);
   });
 
   /* ---------- Status ---------- */
@@ -794,12 +1141,9 @@
       html += '<div class="card"><div class="label">Places and payees</div><p class="note">See where you spend and set the default category for each place.</p><button class="ghost small" id="openPlaces">Open places</button></div>';
       html += '<div class="card"><div class="label">Last email from each bank</div>' + (s.senders.length ? s.senders.map(function (x) { return '<div class="kv"><span>' + esc(x.sender) + '</span><span class="muted">' + esc(ago(x.last)) + '</span></div>'; }).join('') : '<p class="note">None yet.</p>') + '</div>';
       if (s.canSetup) {
-        html += '<div class="card"><div class="label">Bank balances</div><p class="note">Type what each account shows today. Safe to spend uses the latest numbers.</p>' +
+        html += '<div class="card"><div class="label">Bank balances</div><p class="note">Type what each account shows today.</p>' +
           s.accounts.map(function (a) { return '<div class="kv"><span>' + esc(a.account) + '<div class="sub">' + (a.date ? 'Set ' + dayLabel(a.date) : 'Not set') + (a.balance !== null ? ' · ' + rp(a.balance) : '') + '</div></span><input inputmode="numeric" data-bal="' + esc(a.account) + '" placeholder="Rp"></div>'; }).join('') +
           '<p class="err" data-err-bal></p><button class="primary small" id="saveBal">Save balances</button></div>';
-        html += '<div class="card"><div class="label">Bucket caps this month</div><p class="note">The most you plan to spend in each bucket.</p>' +
-          s.buckets.map(function (b) { return '<div class="kv"><span>' + esc(b.bucket) + '<div class="sub">' + (b.cap === null ? 'No cap yet' : rp(b.cap)) + '</div></span><input inputmode="numeric" data-cap="' + esc(b.bucket) + '" placeholder="Rp"></div>'; }).join('') +
-          '<p class="err" data-err-cap></p><button class="primary small" id="saveCap">Save caps</button></div>';
       }
       html += '<div class="card"><div class="label">This device</div><p class="note">Hanaro version 1. The link and key are stored on this device only.</p><button class="link" id="signOut">Disconnect this device</button></div>';
       v.innerHTML = html;
@@ -817,9 +1161,8 @@
         });
       }
       saver('saveBal', 'data-bal', '[data-err-bal]', 'set_balance', ['account', 'amount'], 'Balances');
-      saver('saveCap', 'data-cap', '[data-err-cap]', 'set_cap', ['bucket', 'cap'], 'Caps');
       $('openPlaces').addEventListener('click', function () { go('payees'); });
-      $('signOut').addEventListener('click', function () { if (confirm('Disconnect this device from Hanaro?')) { ['key', 'url', 'queue', 'lastsync'].forEach(function (k) { LS.del('hanaro.' + k); }); ['home', 'review', 'activity', 'categories', 'status', 'plan'].forEach(function (k) { LS.del('hanaro.cache.' + k); }); location.reload(); } });
+      $('signOut').addEventListener('click', disconnect);
     })();
   }
 
@@ -841,9 +1184,9 @@
   }
   function paintPayees(v, d) {
     ensureCats().then(function () {
-      v.innerHTML = '<div style="' + TITLE + '">Places</div><button class="link" id="plBack">‹ Back to Status</button>' +
+      v.innerHTML = '<div style="' + TITLE + '">Places</div><button class="link" id="plBack">‹ Back to Accounts</button>' +
         '<input id="plSearch" type="search" placeholder="Search places" autocomplete="off"><div id="plList"></div>';
-      $('plBack').addEventListener('click', function () { go('status'); });
+      $('plBack').addEventListener('click', function () { go('accounts'); });
       function fill() {
         var q = $('plSearch').value.toLowerCase().trim(), list = d.payees.filter(function (p) { return !q || p.payee.toLowerCase().indexOf(q) !== -1; }).slice(0, 80);
         if (!list.length) { $('plList').innerHTML = '<div class="card empty">' + (d.payees.length ? 'Nothing matches.' : 'No places yet. They appear as you spend.') + '</div>'; return; }
@@ -878,7 +1221,7 @@
     else { el.textContent = name; el.className = 'fv'; }
     $('newTypeWrap').hidden = name !== '__new';
     // Operational categories are business costs, so the spending is marked Business unless it was set by hand.
-    if (state.kind === 'spent' && !state.entityTouched) setEntity(isOperational(name) ? 'Business' : 'Family');
+    if (state.kind === 'spent' && !state.entityTouched) setEntity(isOperational(name) || accEntity($('addAcc').value) === 'PT' ? 'Business' : 'Family');
     updateMore();
   }
   function isOperational(name) {
@@ -886,7 +1229,24 @@
     var c = (state.cats || []).filter(function (x) { return x.category === name; })[0];
     return /operational/i.test(name) || !!(c && /operational/i.test(c.bucket || ''));
   }
-  function setAcc(v) { $('addAcc').value = v; $('accVal').textContent = $('addAcc').value || 'Not sure / cash'; }
+  function accEntity(name) { var f = (state.accountsFull || []).filter(function (a) { return a.account === name; })[0]; return f ? f.entity : ''; }
+  function setAcc(v) {
+    $('addAcc').value = v || ''; $('accVal').textContent = v || (state.kind === 'transfer' || state.kind === 'payment' ? 'Choose' : 'Not sure');
+    $('accVal').className = 'fv' + (v || state.kind === 'spent' || state.kind === 'got' ? '' : ' empty');
+    if (state.kind === 'spent' && !state.entityTouched) setEntity(accEntity(v) === 'PT' || isOperational(state.addCat) ? 'Business' : 'Family');
+  }
+  function setTo(v) { $('addTo').value = v || ''; $('toVal').textContent = v || 'Choose'; $('toVal').className = 'fv' + (v ? '' : ' empty'); }
+  /** The accounts to choose from. mode: any (spent, received), from (transfer, card payment), to (transfer), card (card payment). */
+  function accItems(mode) {
+    var full = state.accountsFull || [], last = LS.get('hanaro.lastacct') || '', count = {};
+    recentTxns().forEach(function (t) { if (t.account) count[t.account] = (count[t.account] || 0) + 1; });
+    var list = full.filter(function (a) { return mode === 'card' ? a.type === 'credit card' : mode === 'any' ? true : (a.type === 'bank' || !a.type); });
+    list.sort(function (x, y) { return ((y.account === last) - (x.account === last)) || ((count[y.account] || 0) - (count[x.account] || 0)); });
+    var out = list.map(function (a) { return { name: a.account + (a.entity === 'PT' ? ' · PT AHU' : ''), value: a.account }; });
+    if (mode === 'any') { out.push({ name: 'Cash', value: 'Cash' }); out.push({ name: 'Not sure', value: '' }); }
+    if (mode === 'to') out.push({ name: 'Cash', value: 'Cash' });
+    return out;
+  }
   /** One line under More that says what is set inside it. */
   function updateMore() {
     var bits = [];
@@ -913,10 +1273,8 @@
     loadHints();
     ensureCats().then(function () {
       var last = LS.get('hanaro.lastacct') || '';
-      $('addAcc').innerHTML = '<option value="">Not sure / cash</option>' + state.accounts.map(function (a) { return '<option' + (a === last ? ' selected' : '') + '>' + esc(a) + '</option>'; }).join('');
-      setAcc(state.accounts.indexOf(last) !== -1 ? last : '');
       setExpr(''); ['addPayee', 'addMemo', 'addNewType'].forEach(function (i) { $(i).value = ''; });
-      state.entityTouched = false; $('moreWrap').hidden = true; $('moreChev').className = 'chev'; setDate(localIso().slice(0, 10)); $('calWrap').hidden = true; $('photoMenu').hidden = true; $('payeeSug').hidden = true; $('addMsg').textContent = ''; setEntity('Family'); $('addPt').checked = false; setKind('spent'); (function () { var lc = null; try { lc = JSON.parse(LS.get('hanaro.lastcur') || 'null'); } catch (e) {} setCur(lc && lc.c && Date.now() - lc.at < 3 * 86400000 ? lc.c : 'IDR'); })();
+      state.entityTouched = false; $('moreWrap').hidden = true; $('moreChev').className = 'chev'; setDate(localIso().slice(0, 10)); $('calWrap').hidden = true; $('photoMenu').hidden = true; $('payeeSug').hidden = true; $('addMsg').textContent = ''; setEntity('Family'); $('addPt').checked = false; setKind('spent'); setAcc(accItems('any').some(function (i) { return i.value === last && last; }) ? last : ''); setTo(''); (function () { var lc = null; try { lc = JSON.parse(LS.get('hanaro.lastcur') || 'null'); } catch (e) {} setCur(lc && lc.c && Date.now() - lc.at < 3 * 86400000 ? lc.c : 'IDR'); })();
       setPhoto(null); locateAdd();
       $('sheetBack').hidden = false; $('sheet').hidden = false; showFavs(); updateMore(); $('sheet').scrollTop = 0; kpScroll = 0; openKeypad();
     }, function (e) { banner(e.message, true); });
@@ -936,7 +1294,7 @@
       if (best.account && state.accounts.indexOf(best.account) !== -1) setAcc(best.account);
       state.geoApplied = true; $('geoText').textContent = 'Suggested from your location.'; $('geoNote').hidden = false;
     }, function (err) {
-      if (err && err.code === 1) { $('geoText').textContent = 'Location is off for Hanaro, so there are no place suggestions. You can allow it in Settings.'; $('geoClear').hidden = true; $('geoNote').hidden = false; }
+      if (err && err.code === 1 && !LS.get('hanaro.geosaid')) { LS.set('hanaro.geosaid', '1'); $('geoText').textContent = 'Location is off for Hanaro, so there are no place suggestions. You can allow it in Settings.'; $('geoClear').hidden = true; $('geoNote').hidden = false; }
     }, { timeout: 4000, maximumAge: 60000, enableHighAccuracy: false });
   }
   $('geoClear').addEventListener('click', function () { $('addPayee').value = ''; setCat(''); $('geoNote').hidden = true; state.geoApplied = false; });
@@ -985,14 +1343,27 @@
   $('calDays').addEventListener('click', function (ev) { var b = ev.target.closest('[data-d]'); if (b && !b.disabled) setDate(b.getAttribute('data-d')); });
   function closeAdd() { closeKeypad(); $('sheet').hidden = true; $('sheetBack').hidden = true; $('picker').hidden = true; }
   function setEntity(e) { state.entity = e; $('entFam').className = e === 'Family' ? 'on' : ''; $('entBiz').className = e === 'Business' ? 'on' : ''; updateMore(); }
+  var KIND_BTN = { spent: 'kindSpent', got: 'kindGot', transfer: 'kindTransfer', payment: 'kindPay', held: 'kindHeld' };
   function setKind(k) {
     state.kind = k;
-    ['Spent:spent', 'Got:got', 'Held:held'].forEach(function (x) { var p = x.split(':'); $('kind' + p[0]).className = k === p[1] ? 'on' : ''; });
-    $('catBtn').hidden = k === 'got';
+    Object.keys(KIND_BTN).forEach(function (x) { $(KIND_BTN[x]).className = k === x ? 'on' : ''; });
+    var move = k === 'transfer' || k === 'payment', newServer = (state.apiV || 1) >= 3;
+    $('kindTransfer').hidden = !newServer; $('kindPay').hidden = !newServer;
+    if (k !== 'spent' && $('addCur').value !== 'IDR') setCur('IDR');
+    $('addCur').disabled = k !== 'spent';
+    $('catBtn').hidden = k === 'got' || move;
     $('payeeLabel').textContent = k === 'got' ? 'Received from' : 'Payee';
+    $('payeeLabel').parentNode.hidden = move;
     $('catLabel').textContent = k === 'held' ? 'What kind of money' : 'Category';
-    $('accLabel').textContent = k === 'got' ? 'Received into' : 'Account';
+    $('accLabel').textContent = k === 'got' ? 'Received into' : move ? (k === 'payment' ? 'Paid from' : 'From') : 'Account';
+    $('toBtn').hidden = !move; $('toLabel').textContent = k === 'payment' ? 'Card that was paid' : 'To';
+    $('moveHint').hidden = !move; $('moreBtn').hidden = move; if (move) $('moreWrap').hidden = true;
+    $('moveHint').textContent = k === 'payment' ? 'Paying a credit card bill. It clears card charges and is not counted as spending.' : k === 'transfer' ? 'Moving your own money between accounts. It is not counted as spending. Choose Cash for a withdrawal.' : '';
+    document.querySelectorAll('[data-spendonly]').forEach(function (x) { x.hidden = move; });
+    if (move) { setPhoto(null); $('photoPrev').hidden = true; }
     $('heldHint').hidden = k !== 'held'; $('entityWrap').hidden = k !== 'spent'; $('ptWrap').hidden = k !== 'spent'; $('fxWrap').hidden = $('addCur').value === 'IDR' || k !== 'spent'; setCat('');
+    var a = $('addAcc').value; if (move && (a === 'Cash' || !accItems('from').some(function (i) { return i.value === a; }))) setAcc(''); else setAcc(a);
+    updateMore();
   }
   /* Payee suggestions come from what you entered before; picking one fills the category and account too. */
   function payeeSuggestions(q) {
@@ -1053,7 +1424,7 @@
     var v = $('addPayee').value;
     if (!v.trim()) { showFavs(); return; }
     renderSug(payeeSuggestions(v));
-    if (!sugCache.length && !hints().length && v.trim().length >= 2) { $('payeeSug').innerHTML = '<span class="note">Places from your YNAB history are still loading. Try again in a moment.</span>'; $('payeeSug').hidden = false; }
+    if (!sugCache.length && !hints().length && !LS.get('hanaro.hints') && v.trim().length >= 2) { $('payeeSug').innerHTML = '<span class="note">Places from your YNAB history are still loading. Try again in a moment.</span>'; $('payeeSug').hidden = false; }
   });
   /* Category picker: suggested first (for this payee), then pinned, then grouped. Also used for the account list. */
   function pickRows() {
@@ -1122,16 +1493,12 @@
     $('pickTitle').textContent = opts.title || 'Category';
     $('pickSearch').value = ''; pickList(''); $('picker').hidden = false; $('picker').scrollTop = 0;
   }
-  function accountItems() {
-    var count = {}, last = LS.get('hanaro.lastacct') || '';
-    recentTxns().forEach(function (t) { if (t.account) count[t.account] = (count[t.account] || 0) + 1; });
-    var list = state.accounts.slice().sort(function (x, y) { return ((y === last) - (x === last)) || ((count[y] || 0) - (count[x] || 0)); });
-    var out = list.map(function (a) { return { name: a, value: a }; });
-    out.push({ name: 'Not sure / cash', value: '' });
-    return out;
-  }
   $('accBtn').addEventListener('click', function () {
-    openPicker({ items: accountItems(), selected: $('addAcc').value, title: $('accLabel').textContent, onPick: function (v) { setAcc(v); } });
+    var k = state.kind, mode = (k === 'transfer' || k === 'payment') ? 'from' : 'any';
+    openPicker({ items: accItems(mode), selected: $('addAcc').value, title: $('accLabel').textContent, onPick: function (v) { setAcc(v); } });
+  });
+  $('toBtn').addEventListener('click', function () {
+    openPicker({ items: accItems(state.kind === 'payment' ? 'card' : 'to'), selected: $('addTo').value, title: $('toLabel').textContent, onPick: function (v) { setTo(v); } });
   });
   $('moreBtn').addEventListener('click', function () { var o = $('moreWrap').hidden; $('moreWrap').hidden = !o; $('moreChev').className = o ? 'chev open' : 'chev'; });
   $('addPt').addEventListener('change', updateMore); $('addMemo').addEventListener('input', updateMore);
@@ -1149,6 +1516,7 @@
   $('addCancel').addEventListener('click', closeAdd); $('sheetBack').addEventListener('click', closeAdd);
   $('entFam').addEventListener('click', function () { state.entityTouched = true; setEntity('Family'); }); $('entBiz').addEventListener('click', function () { state.entityTouched = true; setEntity('Business'); });
   $('kindSpent').addEventListener('click', function () { setKind('spent'); }); $('kindGot').addEventListener('click', function () { setKind('got'); });
+  $('kindTransfer').addEventListener('click', function () { setKind('transfer'); }); $('kindPay').addEventListener('click', function () { setKind('payment'); });
   $('kindHeld').addEventListener('click', function () { setKind('held'); });
   /* ---------- Amount keypad: digits plus + − × ÷, like YNAB. The phone's own number pad has no calculator keys. ---------- */
   var KEYS = [['7', '7'], ['8', '8'], ['9', '9'], ['/', '÷', 'op'], ['4', '4'], ['5', '5'], ['6', '6'], ['*', '×', 'op'], ['1', '1'], ['2', '2'], ['3', '3'], ['-', '−', 'op'], ['L', '000'], ['0', '0'], ['bk', '⌫'], ['+', '+', 'op'], ['=', '=', 'op'], ['done', 'Done', 'done']];
@@ -1225,48 +1593,57 @@
     else return;
     ev.preventDefault();
   });
+  var saving = false;
   $('addSave').addEventListener('click', function () {
-    var cur = $('addCur').value, foreign = cur !== 'IDR' && state.kind === 'spent', calced = calc(state.expr || '');
-    var amt = foreign ? Math.round(calced * 100) / 100 : Math.round(calced), typedIdr = foreign ? Number($('addIdr').value.replace(/[^\d]/g, '')) : 0, payee = $('addPayee').value.trim(), cat = state.addCat, k = state.kind;
+    if (saving) return;
+    var k = state.kind, cur = $('addCur').value, foreign = cur !== 'IDR' && k === 'spent', calced = calc(state.expr || '');
+    var amt = foreign ? Math.round(calced * 100) / 100 : Math.round(calced), typedIdr = foreign ? Number($('addIdr').value.replace(/[^\d]/g, '')) : 0, payee = $('addPayee').value.trim(), cat = state.addCat;
+    var move = k === 'transfer' || k === 'payment', acct = $('addAcc').value, to = $('addTo').value;
     var m = $('addMsg'); m.textContent = '';
     function fail(msg) { m.textContent = msg; banner(msg, true); }
-    var todayIso = localIso().slice(0, 10), dateVal = $('addDate').value || todayIso;
+    var nowStamp = localIso(), todayIso = nowStamp.slice(0, 10), dateVal = $('addDate').value || todayIso;
     if (!amt || isNaN(amt) || amt <= 0) return fail('Type the amount as a number above zero.');
-    if (!payee) return fail(k === 'got' ? 'Type who it came from.' : 'Type who or what it was for.');
+    if (!move && !payee) return fail(k === 'got' ? 'Type who it came from.' : 'Type who or what it was for.');
     if (dateVal > todayIso) return fail('The date cannot be in the future.');
-    // A spend with no category is allowed. It is saved now and waits in Review for a category.
+    if (k === 'transfer') { if (!acct || acct === 'Cash') return fail('Choose the account the money leaves from.'); if (!to) return fail('Choose the account the money goes to.'); if (to === acct) return fail('Choose two different accounts.'); }
+    if (k === 'payment') { if (!acct || acct === 'Cash') return fail('Choose the account the payment came from.'); if (!to) return fail('Choose the card that was paid.'); }
     // An older server cannot take these yet. Say so now, plainly, instead of losing the entry later.
     if ((state.apiV || 1) < 2 && k === 'spent' && !cat) return fail('Choose a category. Saving without one needs the Hanaro server update.');
     if ((state.apiV || 1) < 2 && dateVal !== todayIso) return fail('Past dates need the Hanaro server update. Use today for now.');
     if (k === 'held' && !cat) return fail('Choose what kind of money this is.');
     var newName = $('addNewType').value.trim();
     if (k === 'held' && cat === '__new' && !newName) return fail('Type a name for the new kind, for example Seminar fees.');
-    // Saved on this device right away; sent in the background.
-    var kind = { spent: 'purchase', got: 'income', held: 'held' }[k], acct = $('addAcc').value, memo = $('addMemo').value.trim();
-    LS.set('hanaro.lastacct', acct);
+    saving = true; setTimeout(function () { saving = false; }, 600);
+    // Saved on this device right away; sent in the background. The id is made here, so sending twice never adds twice.
+    var kind = { spent: 'purchase', got: 'income', held: 'held', transfer: 'transfer', payment: 'payment' }[k], memo = $('addMemo').value.trim(), id = newId();
+    if (!move) LS.set('hanaro.lastacct', acct);
     var geo = state.geo, photo = state.photo, entity = k === 'spent' ? (state.entity || 'Family') : '', ptFile = k === 'spent' && $('addPt').checked;
     if (geo && k === 'spent') addPlaces([{ lat: geo.lat, lng: geo.lng, payee: payee, category: cat, account: acct }]);
-    var label = (foreign ? cur + ' ' + amt.toFixed(2) : rp(amt)) + ' ' + payee;
+    var label = (foreign ? cur + ' ' + amt.toFixed(2) : rp(amt)) + ' ' + (move ? (k === 'payment' ? 'card payment' : 'transfer') : payee);
     if (k === 'held' && cat === '__new') {
       cat = 'Held: ' + newName.replace(/^Held:\s*/i, '').trim();
       if (!state.cats.some(function (c) { return c.category === cat; })) state.cats.push({ category: cat, bucket: '', held: true });
       var cc = snap('categories'); if (cc) { cc.d.categories = state.cats; save('categories', cc.d); }
       queue.push({ action: 'add_held_type', args: { name: newName }, label: 'the new kind ' + newName });
     }
-    var now = localIso();
+    var offset = nowStamp.slice(-6), ltype = { purchase: 'purchase', income: 'income', held: 'held_in', transfer: 'transfer', payment: 'payment' }[kind];
     patch('activity', function (d) {
-      d.items.unshift({ id: 'local_' + Date.now(), date: dateVal, timestamp: dateVal === todayIso ? now : dateVal + 'T12:00:00+07:00', type: kind === 'purchase' ? 'purchase' : kind === 'income' ? 'income' : 'held_in', amount: foreign ? (typedIdr || null) : amt, origCurrency: foreign ? cur : '', origAmount: foreign ? amt : null, est: foreign && !typedIdr, account: acct, payee: payee, category: kind === 'income' ? 'Income' : cat, bucket: '', status: (kind === 'purchase' && !cat) ? 'auto' : 'confirmed', memo: memo, entity: entity === 'Business' ? 'Business' : '', ptFile: ptFile, source: 'manual', payNow: false, paid: false, links: '', who: '', by: entity === 'Business' ? 'Business' : ($('whoName').textContent || ''), cleared: false, receipt: !!photo, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null });
+      d.items.unshift({ id: id, date: dateVal, timestamp: dateVal === todayIso ? nowStamp : dateVal + 'T12:00:00' + offset, type: ltype, amount: foreign ? (typedIdr || null) : amt, origCurrency: foreign ? cur : '', origAmount: foreign ? amt : null, est: foreign && !typedIdr, account: acct, payee: move ? (k === 'payment' ? 'Payment to ' + to : 'To ' + to) : payee, category: kind === 'income' ? 'Income' : k === 'transfer' ? 'Own transfer' : move ? '' : cat, bucket: '', status: (kind === 'purchase' && !cat) ? 'auto' : 'confirmed', memo: memo, entity: entity === 'Business' ? 'Business' : '', ptFile: ptFile, source: 'manual', payNow: false, paid: false, links: '', who: $('whoName').textContent || '', by: entity === 'Business' ? 'Business' : ($('whoName').textContent || ''), cleared: false, receipt: !!photo, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null });
     });
     if (kind === 'purchase' && (!foreign || typedIdr)) patch('home', function (h) {
       var n = foreign ? typedIdr : amt;
-      if (dateVal.slice(0, 7) === todayIso.slice(0, 7)) h.spentMonth += n;
-      if (dateVal === todayIso) { h.spentToday += n; h.spentWeek += n; h.spentTodayCount += 1; }
+      if (entity !== 'Business' && accEntity(acct) !== 'PT') {
+        if (dateVal.slice(0, 7) === todayIso.slice(0, 7)) h.spentMonth += n;
+        if (dateVal === todayIso) { h.spentToday += n; h.spentWeek += n; h.spentTodayCount += 1; }
+      }
       if (!cat) h.reviewCount += 1;
-      h.avgPerDay = Math.round(h.spentMonth / Math.max(1, Number(now.slice(8, 10))));
+      h.avgPerDay = Math.round(h.spentMonth / Math.max(1, Number(todayIso.slice(8, 10))));
     });
     closeAdd(); banner('Saved');
-    var c0 = snap(state.view === 'spending' ? 'plan' : state.view); if (c0 && state.view !== 'status' && !editing($('view'))) { if (state.view === 'home' && wide()) paintBoard($('view')); else ({ home: paintHome, review: paintReview, activity: paintActivity, spending: paintSpending })[state.view]($('view'), c0.d); }
-    send('add_txn', { kind: kind, currency: foreign ? cur : 'IDR', idr_amount: typedIdr || undefined, amount: amt, payee: payee, category: cat, account: acct, memo: memo, date: dateVal, entity: entity, pt_file: ptFile, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null, photo: photo || undefined }, label).then(function (ok) { if (ok && !queue.length) render(); });
+    var c0 = snap(state.view === 'spending' ? 'plan' : state.view); if (c0 && ({ home: 1, review: 1, activity: 1 })[state.view] && !editing($('view'))) { if (state.view === 'home' && wide()) paintBoard($('view')); else ({ home: paintHome, review: paintReview, activity: paintActivity })[state.view]($('view'), c0.d); }
+    var args = { id: id, kind: kind, currency: foreign ? cur : 'IDR', idr_amount: typedIdr || undefined, amount: amt, payee: move ? undefined : payee, category: move ? undefined : cat, account: acct, memo: memo, date: dateVal, at: nowStamp, entity: entity, pt_file: ptFile, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null, photo: photo || undefined };
+    if (k === 'transfer') args.toAccount = to; if (k === 'payment') args.card = to;
+    send('add_txn', args, label).then(afterWrite);
   });
 
   /* ---------- start ---------- */
@@ -1276,10 +1653,36 @@
     var cc = snap('categories'); if (cc) useCats(cc.d);
     renderNav(); render();
   }
-  document.addEventListener('visibilitychange', function () { if (!document.hidden && conf().key && $('sheet').hidden) render(); });
-  window.addEventListener('error', function (e) { banner('Something broke in the app: ' + e.message, true); });
+  document.addEventListener('visibilitychange', function () { if (!document.hidden && conf().key && $('sheet').hidden && $('dlg').hidden) { if (queue.length) flush().then(afterWrite); render(); } });
+  window.addEventListener('online', function () { state.offline = false; if (conf().key) { flush().then(afterWrite); setPill(); } });
+  window.addEventListener('offline', function () { state.offline = true; setPill(); });
+  window.addEventListener('error', function (e) { if (/ResizeObserver/.test(e.message || '')) return; banner('Something broke in the app: ' + e.message, true); });
   window.addEventListener('unhandledrejection', function (e) { banner('Something went wrong: ' + (e.reason && e.reason.message || e.reason), true); });
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () {});
+  /* A new version of the app: say so once and offer to reload. */
+  if ('serviceWorker' in navigator) {
+    var hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js').catch(function () {});
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (hadController) banner('Hanaro was updated.', false, 0, { label: 'Reload', fn: function () { location.reload(); } });
+      hadController = true;
+    });
+  }
+  /* Pull down at the top of a screen to refresh. */
+  (function () {
+    var y0 = null, pulled = 0, ind = null;
+    function top() { return (window.scrollY || document.documentElement.scrollTop || 0) <= 0; }
+    document.addEventListener('touchstart', function (ev) { if (top() && $('sheet').hidden && $('picker').hidden && $('txnEdit').hidden && $('planEdit').hidden && $('dlg').hidden && ev.touches.length === 1) { y0 = ev.touches[0].clientY; pulled = 0; } else y0 = null; }, { passive: true });
+    document.addEventListener('touchmove', function (ev) {
+      if (y0 === null) return;
+      pulled = ev.touches[0].clientY - y0;
+      if (pulled > 8 && top()) { if (!ind) { ind = document.createElement('div'); ind.className = 'ptr'; document.body.appendChild(ind); } ind.textContent = pulled > 80 ? 'Release to refresh' : 'Pull to refresh'; ind.style.opacity = Math.min(1, pulled / 80); ind.style.transform = 'translateY(' + Math.min(pulled / 2, 50) + 'px)'; }
+    }, { passive: true });
+    document.addEventListener('touchend', function () {
+      if (ind) { ind.remove(); ind = null; }
+      if (y0 !== null && pulled > 80 && conf().key) { bootP = null; state.offline = false; render(true); }
+      y0 = null; pulled = 0;
+    }, { passive: true });
+  })();
   parseHash();
   if (conf().url && conf().key) start(); else showSetup('');
 })();

@@ -13,11 +13,14 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" type="image/png" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet"></noscript>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div id="banner" role="status" aria-live="polite" hidden></div>
+<div id="toasts" role="status" aria-live="polite"></div>
+<div id="dlg" hidden></div>
 
 <section id="setup" hidden>
   <div class="setup-card">
@@ -46,13 +49,12 @@
 
 <nav id="nav" hidden aria-label="Main">
   <button data-go="home" aria-label="Home"></button>
-  <button data-go="review" aria-label="Review"></button>
-  <button id="addBtn" class="add" aria-label="Add transaction">
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span class="lb">Add</span>
-  </button>
   <button data-go="activity" aria-label="Activity"></button>
+  <button id="addBtn" class="add" aria-label="Add transaction">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
   <button data-go="spending" aria-label="Spending"></button>
-  <button data-go="status" aria-label="Status"></button>
+  <button data-go="accounts" aria-label="Accounts"></button>
 </nav>
 
 <div id="sheetBack" hidden></div>
@@ -64,7 +66,9 @@
     <div class="seg" role="tablist">
       <button id="kindSpent" class="on" role="tab">Spent</button>
       <button id="kindGot" role="tab">Received</button>
-      <button id="kindHeld" role="tab">Held for others</button>
+      <button id="kindTransfer" role="tab">Transfer</button>
+      <button id="kindPay" role="tab">Pay card</button>
+      <button id="kindHeld" role="tab">Held</button>
     </div>
   </div>
   <div class="fields">
@@ -75,7 +79,10 @@
     <div id="newTypeWrap" class="field" hidden><label for="addNewType">Name of the new kind</label><input id="addNewType" autocomplete="off" placeholder="For example, Seminar fees"></div>
     <p id="heldHint" class="note" hidden>Money someone gave you to pass on. It is not your income and not counted as spending.</p>
     <button id="accBtn" class="field fbtn" type="button"><span class="fl" id="accLabel">Account</span><span class="fv" id="accVal">Not sure / cash</span><span class="chev" aria-hidden="true">›</span></button>
-    <select id="addAcc" hidden></select>
+    <input id="addAcc" type="hidden">
+    <button id="toBtn" class="field fbtn" type="button" hidden><span class="fl" id="toLabel">To</span><span class="fv empty" id="toVal">Choose</span><span class="chev" aria-hidden="true">›</span></button>
+    <input id="addTo" type="hidden">
+    <p id="moveHint" class="note" hidden></p>
     <button id="dateBtn" class="field fbtn" type="button"><span class="fl">Date</span><span class="fv blue" id="dateVal"></span></button>
     <div id="calWrap" class="cal" hidden>
       <div class="calhead"><button type="button" id="calTitle" class="caltitle"></button><button type="button" id="calPrev" class="calnav" aria-label="Previous month">‹</button><button type="button" id="calNext" class="calnav" aria-label="Next month">›</button></div>
@@ -84,7 +91,7 @@
     </div>
     <input id="addDate" type="hidden">
     <div class="field" id="fxWrap" hidden><label for="addIdr">Rupiah charged (optional)</label><input id="addIdr" inputmode="numeric" autocomplete="off" placeholder="Leave empty to use the current rate"><span class="note">The real amount from the bank email replaces the estimate later.</span></div>
-    <button id="photoBtn" class="field fbtn" type="button"><span class="fl">Photo</span><span class="fv empty" id="photoVal">Add a receipt photo</span><span class="chev" aria-hidden="true">›</span></button>
+    <button id="photoBtn" class="field fbtn" data-spendonly type="button"><span class="fl">Photo</span><span class="fv empty" id="photoVal">Add a receipt photo</span><span class="chev" aria-hidden="true">›</span></button>
     <div id="photoMenu" class="pmenu" hidden><button type="button" id="photoTake">Take photo</button><button type="button" id="photoPick">Choose from library</button></div>
     <div id="photoPrev" class="pprev" hidden><img id="photoThumb" alt="Receipt photo preview"><div class="pact"><button type="button" class="link" id="photoChange">Replace</button><button type="button" class="link" id="photoRemove">Remove</button></div></div>
     <input id="photoCam" type="file" accept="image/*" capture="environment" hidden><input id="photoIn" type="file" accept="image/*" hidden>
@@ -113,15 +120,20 @@
   <div class="te-amt" id="teAmt"></div>
   <div class="te-sub" id="teSub"></div>
   <div class="fields" style="margin:0">
-    <div class="field"><label for="tePayee">Payee</label><input id="tePayee" autocomplete="off" autocapitalize="words"></div>
+    <div class="field" id="teAmtWrap" hidden><label for="teAmtIn" id="teAmtLabel">Amount (Rp)</label><input id="teAmtIn" inputmode="numeric" autocomplete="off"></div>
+    <div class="field" id="tePayeeWrap"><label for="tePayee">Payee</label><input id="tePayee" autocomplete="off" autocapitalize="words"></div>
     <button id="teCat" class="field fbtn" type="button"><span class="fl">Category</span><span class="fv" id="teCatVal">Choose</span><span class="chev" aria-hidden="true">›</span></button>
-    <div class="field"><span class="fl">This spending is</span><div class="seg"><button type="button" id="teFam" class="on">Family</button><button type="button" id="teBiz">Business</button></div></div>
-    <div class="field"><label class="chk" for="tePt"><input type="checkbox" id="tePt"> File for PT AHU</label></div>
+    <button id="teAcc" class="field fbtn" type="button" hidden><span class="fl">Account</span><span class="fv" id="teAccVal">Not sure</span><span class="chev" aria-hidden="true">›</span></button>
+    <div class="field" id="teDateWrap" hidden><label for="teDate">Date</label><input id="teDate" type="date"></div>
+    <div class="field" id="teWhoWrap" hidden><span class="fl">Who</span><div class="seg"><button type="button" id="teAJ">AJ</button><button type="button" id="teCyn">Cynthia</button></div></div>
+    <div class="field" id="teEntWrap"><span class="fl">This spending is</span><div class="seg"><button type="button" id="teFam" class="on">Family</button><button type="button" id="teBiz">Business</button></div></div>
+    <div class="field" id="tePtWrap"><label class="chk" for="tePt"><input type="checkbox" id="tePt"> File for PT AHU</label></div>
     <div class="field"><label for="teMemo">Memo</label><input id="teMemo" autocomplete="off"></div>
-    <div class="field"><span class="fl">Receipt photo</span><button id="tePhoto" class="link" type="button">Add receipt photo</button><img id="tePhotoThumb" class="thumb" alt="Receipt photo preview" hidden><input id="tePhotoIn" type="file" accept="image/*" hidden></div>
+    <div class="field" id="tePhotoWrap"><span class="fl">Receipt photo</span><button id="tePhoto" class="link" type="button">Add receipt photo</button><img id="tePhotoThumb" class="thumb" alt="Receipt photo preview" hidden><input id="tePhotoIn" type="file" accept="image/*" hidden></div>
   </div>
   <p id="teMsg" class="err" role="alert"></p>
   <button id="teSave" class="primary" style="margin-top:8px">Save</button>
+  <button id="teDelete" class="ghost dangerbtn" style="margin-top:10px" hidden>Delete this entry</button>
 </section>
 
 <section id="planEdit" hidden role="dialog" aria-modal="true" aria-label="Plan item">
