@@ -136,6 +136,36 @@ r = P.parseEmail({
 });
 eq('bca card with line breaks', r.txn && r.txn.idr_amount, 96416);
 
+// --- Charged abroad: BCA sends the foreign amount in Indonesian style with the trailing zero dropped ("MYR 38,2" is 38.20, not 382)
+eq('foreign comma decimal, zero dropped', P.parseForeignAmount_('MYR 38,2'), 38.2);
+eq('foreign comma decimal', P.parseForeignAmount_('38,25'), 38.25);
+eq('foreign dot decimal', P.parseForeignAmount_('38.20'), 38.2);
+eq('foreign thousands and decimals (Indonesian style)', P.parseForeignAmount_('1.234,50'), 1234.5);
+eq('foreign thousands and decimals (English style)', P.parseForeignAmount_('1,234.50'), 1234.5);
+eq('foreign thousands only', P.parseForeignAmount_('1,234'), 1234);
+eq('foreign whole number', P.parseForeignAmount_('120'), 120);
+eq('foreign junk', P.parseForeignAmount_('n/a'), null);
+eq('money: rupiah stays rupiah', JSON.stringify(P.parseMoney_('Rp96.416,00')), JSON.stringify({ currency: 'IDR', amount: 96416 }));
+eq('money: IDR code', JSON.stringify(P.parseMoney_('IDR 185,000')), JSON.stringify({ currency: 'IDR', amount: 185000 }));
+eq('money: MYR', JSON.stringify(P.parseMoney_('MYR 38,2')), JSON.stringify({ currency: 'MYR', amount: 38.2 }));
+eq('money: unreadable', P.parseMoney_('-'), null);
+r = P.parseEmail({
+  from: 'kartukreditbca@bca.co.id', subject: 'Credit Card Transaction Notification', messageId: 'fx1',
+  html: tbl([['Nomor Customer', '0000000012345678'], ['Nomor Kartu', '431657XXXX1234'], ['Merchant / ATM', 'SAMPLE COFFEE KL TERMINAL 1'],
+    ['Jenis Transaksi', 'CONTACTLESS LUAR NEGERI'], ['Otentikasi', 'TRANSAKSI TANPA PIN'], ['Pada Tanggal', '12-11-2026 14:06:46 WIB'], ['Sejumlah', 'MYR 38,2']])
+});
+eq('foreign card charge is parsed, not failed', r.status, 'parsed');
+eq('foreign card charge keeps currency and amount', [r.txn.orig_currency, r.txn.orig_amount], ['MYR', 38.2]);
+eq('foreign card charge has no rupiah guess', r.txn.idr_amount, null);
+eq('foreign card charge is flagged as an estimate', r.txn.flags, ['fx_est']);
+eq('foreign card charge time and card', [r.txn.timestamp, r.txn.account_last], ['2026-11-12T14:06:46+07:00', '1234']);
+eq('foreign card charge has a stable dedupe key', /MYR38\.2/.test(r.txn.dedupe_key), true);
+r = P.parseEmail({
+  from: 'kartukreditbca@bca.co.id', subject: 'Credit Card Transaction Notification', messageId: 'fx2',
+  html: tbl([['Nomor Kartu', '431657XXXX1234'], ['Merchant / ATM', 'SAMPLE SHOP'], ['Pada Tanggal', '12-11-2026 14:06:46 WIB'], ['Sejumlah', '-']])
+});
+eq('unreadable amount still goes to review', r.status, 'failed');
+
 
 // ---------- App logic (apps-script/api/Logic.gs) ----------
 const sb2 = { module: { exports: {} }, console };

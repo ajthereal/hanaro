@@ -75,6 +75,34 @@ function parseIdr(s) {
   return isNaN(n) ? null : n;
 }
 
+/**
+ * Foreign amounts: BCA writes them in Indonesian style and drops a trailing zero, so
+ * "MYR 38,2" is 38.20, "SGD 1.234,50" is 1234.50 and "USD 12.50" is 12.50.
+ * A single separator followed by 3 digits is a thousands mark ("1,234" is 1234). Returns number or null.
+ */
+function parseForeignAmount_(s) {
+  var c = String(s === undefined || s === null ? '' : s).replace(/[^0-9.,]/g, '');
+  if (!c) return null;
+  var lc = c.lastIndexOf(','), ld = c.lastIndexOf('.'), dec = '';
+  if (lc !== -1 && ld !== -1) dec = lc > ld ? ',' : '.';
+  else if (lc !== -1) dec = (/,\d{1,2}$/.test(c) && c.indexOf(',') === lc) ? ',' : '';
+  else if (ld !== -1) dec = (/\.\d{1,2}$/.test(c) && c.indexOf('.') === ld) ? '.' : '';
+  if (dec === ',') c = c.replace(/\./g, '').replace(',', '.');
+  else if (dec === '.') c = c.replace(/,/g, '');
+  else c = c.replace(/[.,]/g, '');
+  var n = parseFloat(c);
+  return isNaN(n) ? null : n;
+}
+
+/** "Rp96.416,00" / "IDR 185,000" -> { currency: 'IDR', amount }. "MYR 38,2" -> { currency: 'MYR', amount: 38.2 }. Null if unreadable. */
+function parseMoney_(s) {
+  var raw = String(s === undefined || s === null ? '' : s).trim();
+  var m = raw.match(/^([A-Za-z]{3})\s*(.*)$/);
+  var cur = m ? m[1].toUpperCase() : 'IDR';
+  var amount = cur === 'IDR' ? parseIdr(m ? m[2] : raw) : parseForeignAmount_(m[2]);
+  return amount === null ? null : { currency: cur, amount: amount };
+}
+
 function pad2(n) { return (n < 10 ? '0' : '') + n; }
 
 /** Returns "YYYY-MM-DDTHH:MM:SS+07:00" (WIB) or null. Accepts the formats banks use. */
@@ -102,8 +130,10 @@ function last4(s) {
 
 function dedupeKey(txn) {
   var minute = (txn.timestamp || '').slice(0, 16);
-  if (txn.bank_ref) return [txn.bank, txn.account_last, txn.bank_ref, txn.idr_amount].join('|');
-  return [txn.bank, txn.account_last, minute, txn.idr_amount, (txn.payee || '').toLowerCase()].join('|');
+  // A foreign charge has no rupiah amount in the email yet, so its original amount identifies it.
+  var amt = (txn.idr_amount === null || txn.idr_amount === undefined) ? (txn.orig_currency || '') + (txn.orig_amount === undefined ? '' : txn.orig_amount) : txn.idr_amount;
+  if (txn.bank_ref) return [txn.bank, txn.account_last, txn.bank_ref, amt].join('|');
+  return [txn.bank, txn.account_last, minute, amt, (txn.payee || '').toLowerCase()].join('|');
 }
 
 function baseTxn(msg, bank, parser) {
@@ -153,10 +183,17 @@ function parseBcaJournal(msg) {
 function parseBcaCard(msg) {
   var f = extractFields(htmlToText(msg.html));
   var when = parseWib(f['pada tanggal']);
-  var amt = parseIdr(f['sejumlah']);
-  if (!when || amt === null) return fail('bca_card', 'Could not find the date or amount');
+  var money = parseMoney_(f['sejumlah']);
+  if (!when || !money) return fail('bca_card', 'Could not find the date or amount');
   var t = baseTxn(msg, 'BCA', 'bca_card');
-  t.timestamp = when; t.date = when.slice(0, 10); t.idr_amount = amt;
+  t.timestamp = when; t.date = when.slice(0, 10);
+  if (money.currency === 'IDR') {
+    t.idr_amount = money.amount;
+  } else {
+    // Charged abroad: the email gives the foreign amount only. The rupiah amount is filled in later (capture), never guessed here.
+    t.orig_currency = money.currency; t.orig_amount = money.amount; t.idr_amount = null;
+    t.flags.push('fx_est');
+  }
   t.account_last = last4(f['nomor kartu']);
   t.card_customer = f['nomor customer'] || '';
   t.payee = cleanMerchant_(f['merchant / atm'] || '');
@@ -253,5 +290,5 @@ function parseEmail(msg) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { parseEmail: parseEmail, parseIdr: parseIdr, parseWib: parseWib, htmlToText: htmlToText, extractFields: extractFields, isKnownSender: isKnownSender, dedupeKey: dedupeKey, cleanMerchant_: cleanMerchant_ };
+  module.exports = { parseEmail: parseEmail, parseIdr: parseIdr, parseMoney_: parseMoney_, parseForeignAmount_: parseForeignAmount_, parseWib: parseWib, htmlToText: htmlToText, extractFields: extractFields, isKnownSender: isKnownSender, dedupeKey: dedupeKey, cleanMerchant_: cleanMerchant_ };
 }

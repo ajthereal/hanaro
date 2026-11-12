@@ -96,6 +96,7 @@ function captureRun() {
     readTab_(dd).forEach(function (r) { seenKeys[r.dedupe_key] = r.transaction_id; });
     var accounts = readTab_(book.getSheetByName('Accounts'));
     var rules = readTab_(book.getSheetByName('Rules'));
+    var txAll = null; // read only if a foreign-currency charge shows up
 
     var inboxRows = [], txRows = [], ddRows = [], pings = [], counts = { parsed: 0, failed: 0, ignored: 0, dup: 0 };
 
@@ -114,6 +115,18 @@ function captureRun() {
           parser: res.parser || (res.txn && res.txn.parser) || '', parse_status: res.status,
           parse_error: res.error || res.reason || '', processed_at: nowIso_()
         };
+        if (res.status === 'parsed' && res.txn.orig_currency && res.txn.orig_currency !== 'IDR' && (res.txn.idr_amount === null || res.txn.idr_amount === undefined)) {
+          // Charged abroad: the bank email has no rupiah amount, so estimate it. The real amount can be typed in later.
+          if (!txAll) txAll = readTab_(tx);
+          var fr = fxEstimate_(txAll, res.txn.orig_currency);
+          if (fr) {
+            res.txn.fx_rate = fr.rate;
+            res.txn.idr_amount = Math.round(res.txn.orig_amount * fr.rate);
+          } else {
+            res = { status: 'failed', parser: res.txn.parser, error: 'Charged in ' + res.txn.orig_currency + ' ' + res.txn.orig_amount.toFixed(2) + ' and no exchange rate could be found. Please enter the rupiah amount by hand.' };
+            row.parse_status = 'failed'; row.parse_error = res.error;
+          }
+        }
         if (res.status === 'parsed') {
           counts.parsed++;
           var t = res.txn;
@@ -130,14 +143,15 @@ function captureRun() {
           var id = newId_();
           txRows.push({
             id: id, date: t.date, timestamp: t.timestamp, txn_type: t.txn_type, idr_amount: t.idr_amount,
-            orig_currency: 'IDR', account: acc ? acc.account : t.bank + ' ...' + (t.account_last || '?'),
+            orig_currency: t.orig_currency || 'IDR', orig_amount: t.orig_amount === undefined ? '' : t.orig_amount, fx_rate: t.fx_rate || '',
+            account: acc ? acc.account : t.bank + ' ...' + (t.account_last || '?'),
             payee: t.payee, category: rule ? rule.category : '', bucket: rule ? rule.bucket : '',
             source: 'email', bank_ref: t.bank_ref || '', source_message_id: mid, links_to_id: linked,
             settled: t.settled, status: status, flags: flags.join(','), memo: t.memo || '',
             created_at: nowIso_(), updated_at: nowIso_()
           });
           if (rule && String(rule.auto_confirm).toUpperCase() === 'Y') txRows[txRows.length - 1].flags += (flags.length ? ',' : '') + 'rule:' + rule.rule_id;
-          if (t.txn_type === 'purchase' && status === 'auto') pings.push({ amount: t.idr_amount, account: acc ? acc.account : t.bank, payNow: flags.indexOf('pay_now') !== -1, ms: Date.parse(t.timestamp) });
+          if (t.txn_type === 'purchase' && status === 'auto') pings.push({ amount: t.idr_amount, orig: (t.orig_currency && t.orig_currency !== 'IDR') ? t.orig_currency + ' ' + Number(t.orig_amount).toFixed(2) : '', account: acc ? acc.account : t.bank, payNow: flags.indexOf('pay_now') !== -1, ms: Date.parse(t.timestamp) });
           ddRows.push({ dedupe_key: key, bank: t.bank, account_last4: t.account_last, bank_ref: t.bank_ref || '', transaction_id: id, created_at: nowIso_() });
           seenKeys[key] = id;
           row.transaction_id = id;
@@ -190,12 +204,30 @@ function notifyNew_(tx, pings, failed) {
     var manual = recentManualAmounts_(tx);
     pings = pings.filter(function (p) { var i = manual.indexOf(Number(p.amount)); if (i !== -1) { manual.splice(i, 1); return false; } return true; });
   }
-  pings.slice(0, 6).forEach(function (p) { lines.push('New charge ' + rpText_(p.amount) + ' on ' + p.account + (p.payNow ? ' (pay today)' : '')); });
+  pings.slice(0, 6).forEach(function (p) { lines.push('New charge ' + (p.orig ? p.orig + ' (about ' + rpText_(p.amount) + ')' : rpText_(p.amount)) + ' on ' + p.account + (p.payNow ? ' (pay today)' : '')); });
   if (pings.length > 6) lines.push('and ' + (pings.length - 6) + ' more');
   if (failed) lines.push('Could not read ' + failed + ' email' + (failed === 1 ? '' : 's') + '. Check Review in Hanaro.');
   if (!lines.length) return;
   if (pings.length) lines.push('Open Hanaro to confirm.');
   telegram_(lines.join('\n'));
+}
+
+/** Rupiah per 1 unit of a foreign currency: the card's last real rate (last 60 days) first, then today's market rate. Never invented; null if neither is found. */
+function fxEstimate_(rows, cur) {
+  var cutoff = Utilities.formatDate(new Date(Date.now() - 60 * 86400000), 'Asia/Jakarta', 'yyyy-MM-dd'), best = null;
+  rows.forEach(function (r) {
+    if (r.orig_currency !== cur || !(Number(r.fx_rate) > 0) || String(r.date).slice(0, 10) < cutoff || String(r.flags).indexOf('fx_est') !== -1) return;
+    if (!best || String(r.timestamp) > best.ts) best = { ts: String(r.timestamp), rate: Number(r.fx_rate) };
+  });
+  if (best) return { rate: best.rate, source: 'card' };
+  try {
+    var resp = UrlFetchApp.fetch('https://open.er-api.com/v6/latest/' + cur, { muteHttpExceptions: true });
+    if (resp.getResponseCode() === 200) {
+      var j = JSON.parse(resp.getContentText()), rate = j && j.rates && j.rates.IDR;
+      if (rate > 0) return { rate: rate, source: 'market' };
+    }
+  } catch (e) {}
+  return null;
 }
 
 function rpText_(n) { return 'Rp ' + Math.round(Number(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.'); }
