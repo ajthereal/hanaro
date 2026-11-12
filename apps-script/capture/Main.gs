@@ -8,6 +8,7 @@ var SHEET_ID = 'PASTE_SHEET_ID_HERE';          // set once in the pasted copy, n
 var SENDER_QUERY = 'from:(bca@bca.co.id OR kartukreditbca@bca.co.id OR CREDITCARD.NOTIFICATION@cimbniaga.co.id OR jenius_noreply@smbci.com OR notification@uob.co.id OR noreply_UOB@uob.co.id)';
 var INITIAL_LOOKBACK_DAYS = 7;
 var MAX_THREADS_PER_RUN = 100;
+var MAX_PAGES = 20;          // up to 2000 threads in one run (a long gap, or a new install)
 var OVERLAP_SECONDS = 1800; // each run looks back 30 minutes so a slow or late email is never dropped
 
 function ss_() { return SpreadsheetApp.openById(SHEET_ID); }
@@ -26,6 +27,14 @@ function appendObjects_(sheet, objs) {
   var h = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   var rows = objs.map(function (o) { return h.map(function (k) { return o[k] === undefined ? '' : o[k]; }); });
   sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, h.length).setValues(rows);
+}
+
+/** One column of a tab, from row 2 down. */
+function columnValues_(sheet, header) {
+  var last = sheet.getLastRow(); if (last < 2) return [];
+  var h = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0], i = h.indexOf(header);
+  if (i < 0) return [];
+  return sheet.getRange(2, i + 1, last - 1, 1).getValues().map(function (r) { return r[0]; });
 }
 
 function newId_() { return 't_' + Utilities.getUuid().replace(/-/g, '').slice(0, 12); }
@@ -62,7 +71,7 @@ function ruleFor_(rules, payee) {
   var p = ruleKey_(payee);
   for (var i = 0; i < rules.length; i++) {
     var m = ruleKey_(rules[i].match_text);
-    if (m && p.indexOf(m) !== -1) return rules[i];
+    if (m.length >= 3 && p.indexOf(m) !== -1) return rules[i];
   }
   return null;
 }
@@ -81,7 +90,13 @@ function captureRun() {
 
     // Cheap exit first: most minutes there is nothing new, so skip reading the big tabs.
     var query = SENDER_QUERY + ' after:' + (last - OVERLAP_SECONDS);
-    var threads = GmailApp.search(query, 0, MAX_THREADS_PER_RUN);
+    var threads = [], truncated = false;
+    for (var pg = 0; pg < MAX_PAGES; pg++) {
+      var part = GmailApp.search(query, pg * MAX_THREADS_PER_RUN, MAX_THREADS_PER_RUN);
+      threads = threads.concat(part);
+      if (part.length < MAX_THREADS_PER_RUN) break;
+      if (pg === MAX_PAGES - 1) truncated = true;
+    }
     if (!threads.length) {
       props.setProperty('LAST_TS', String(started));
       setSummary_(book.getSheetByName('Summary'), 'last_sync_ok', nowIso_());
@@ -92,6 +107,8 @@ function captureRun() {
     var dd = book.getSheetByName('DedupeIndex');
     var seenIds = {};
     readTab_(inbox).forEach(function (r) { seenIds[r.message_id] = true; });
+    // An email already turned into a transaction is never added twice, even if its Inbox_Raw row was lost in an earlier failed run.
+    columnValues_(tx, 'source_message_id').forEach(function (v) { if (v) seenIds[v] = true; });
     var seenKeys = {};
     readTab_(dd).forEach(function (r) { seenKeys[r.dedupe_key] = r.transaction_id; });
     var accounts = readTab_(book.getSheetByName('Accounts'));
@@ -170,11 +187,14 @@ function captureRun() {
       });
     });
 
-    appendObjects_(inbox, inboxRows);
+    // Order matters: money rows first. If a later write fails, the next run sees these ids and does not add them again.
     appendObjects_(tx, txRows);
     appendObjects_(dd, ddRows);
+    appendObjects_(inbox, inboxRows);
     notifyNew_(tx, pings, counts.failed);
-    props.setProperty('LAST_TS', String(started));
+    if (truncated) {
+      log_(logSheet, 'warn', 'Capture run saw more than ' + (MAX_PAGES * MAX_THREADS_PER_RUN) + ' emails', 'Older emails may not have been read. Run setup again after raising MAX_PAGES.');
+    } else props.setProperty('LAST_TS', String(started));
     var summary = book.getSheetByName('Summary');
     setSummary_(summary, 'last_sync_ok', nowIso_());
     setSummary_(summary, 'last_sync_counts', JSON.stringify(counts));
