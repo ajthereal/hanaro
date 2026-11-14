@@ -45,7 +45,7 @@ sb.__cache = {
 };
 sb.__props = {};
 vm.createContext(sb);
-['Logic.gs', 'Core.gs', 'Api.gs'].forEach((f) => vm.runInContext(fs.readFileSync(path.join(__dirname, '../apps-script/api', f), 'utf8'), sb, { filename: f }));
+['Logic.gs', 'Core.gs', 'Api.gs', 'YnabImport.gs', 'Migrate.gs'].forEach((f) => vm.runInContext(fs.readFileSync(path.join(__dirname, '../apps-script/api', f), 'utf8'), sb, { filename: f }));
 const run = (code) => vm.runInContext(code, sb);
 
 let failed = 0;
@@ -213,6 +213,29 @@ eq('limits are refused for a bank account', lerr2, 'Limits are only for credit c
 run("handle_({ action: 'set_balance', account: 'Bank A', amount: 900000, tracked: 850000 }, 'aj')");
 const BH = sb.__book.data.Balances[0], lastB = sb.__book.data.Balances[sb.__book.data.Balances.length - 1];
 eq('confirmed balance keeps the time and the gap from what was tracked', [lastB[BH.indexOf('confirmed_balance')], lastB[BH.indexOf('tracked')], lastB[BH.indexOf('difference')], !!lastB[BH.indexOf('confirmed_at')]], [900000, 850000, 50000, true]);
+
+// ---------- v2 migration pieces (pure parts) ----------
+const grp = [
+  { name: 'Internal Master Category', categories: [{ id: 'i1', name: 'Inflow: Ready to Assign' }] },
+  { name: 'Everyday', categories: [{ id: 'c1', name: 'Groceries' }, { id: 'c2', name: 'Tools' }, { id: 'c3', name: 'Old thing', hidden: true }, { id: 'c4', name: 'Gone', deleted: true }] },
+  { name: 'Business', categories: [{ id: 'c5', name: 'Tools' }, { id: 'c6', name: 'Client Orders' }] },
+  { name: 'Debt Payment', categories: [{ id: 'c7', name: 'Loan' }] }
+];
+const crow = run('categoryRowsFromYnab_(' + JSON.stringify(grp) + ')');
+eq('categories copied as they are in YNAB, master group and deleted ones skipped', crow.map((c) => c.group + '>' + c.category + '>' + c.counts + '>' + c.active),
+  ['Everyday>Groceries>Y>Y', 'Everyday>Tools>Y>Y', 'Everyday>Old thing>Y>N', 'Business>Tools>Y>Y', 'Business>Client Orders>Y>Y', 'Debt Payment>Loan>N>Y']);
+const arow = (payee, g, c, d) => ({ payee, category_group: g, category: c, outflow: 1000, inflow: 0, transfer_account: '', date: d });
+const learned = run('rulesFromArchive_(' + JSON.stringify([
+  arow('Kopi Tuku', 'Everyday', 'Groceries', '2026-01-01'), arow('Kopi Tuku', 'Everyday', 'Groceries', '2026-01-02'), arow('Kopi Tuku', 'Everyday', 'Groceries', '2026-01-03'),
+  arow('Alat Toko', 'Business', 'Tools', '2026-01-01'), arow('Alat Toko', 'Business', 'Tools', '2026-01-02'),
+  arow('Bayar Loan', 'Debt Payment', 'Loan', '2026-01-01'), arow('Bayar Loan', 'Debt Payment', 'Loan', '2026-01-02'),
+  arow('Once Only', 'Everyday', 'Groceries', '2026-01-01')]) + ', [], ' + JSON.stringify(crow) + ')');
+eq('rules learn the group too (Tools in Business is not Tools in Everyday), trusted at 3 uses', learned.map((r) => [r.match_text, r.category_group, r.category, r.auto_confirm]),
+  [['alat toko', 'Business', 'Tools', 'N'], ['kopi tuku', 'Everyday', 'Groceries', 'Y']]);
+const fixes = run('entryFixes_(' + JSON.stringify([
+  { id: 'a', _row: 2, category: 'Groceries', txn_type: 'purchase', status: 'confirmed' }, { id: 'b', _row: 3, category: 'Eating out', txn_type: 'purchase', status: 'confirmed' },
+  { id: 'c', _row: 4, category: 'Tools', txn_type: 'purchase', status: 'confirmed' }, { id: 'd', _row: 5, category: 'Groceries', txn_type: 'purchase', status: 'void' }]) + ', ' + JSON.stringify(crow) + ')');
+eq('entries keep a category that exists, lose one that does not, and a name in two groups goes to Review', fixes.map((f) => f.id + ':' + (f.clear ? 'clear' : f.group)), ['a:Everyday', 'b:clear', 'c:clear']);
 
 module.exports = failed;
 if (require.main === module) process.exit(failed ? 1 : 0);

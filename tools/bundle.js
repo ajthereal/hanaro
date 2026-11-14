@@ -11,5 +11,5 @@ if (process.argv.includes('--core')) {
     '  var m = { exports: {} };\n' +
     '  root.HanaroCore = (new Function("module", src + "\\n;return Object.assign({}, __logicExports, module.exports);"))(m);\n})(typeof window !== "undefined" ? window : this);\n');
 } else {
-  process.stdout.write(['Logic.gs', 'Core.gs', 'Api.gs', 'YnabImport.gs'].map(read).join('\n'));
+  process.stdout.write(['Logic.gs', 'Core.gs', 'Api.gs', 'YnabImport.gs', 'Migrate.gs'].map(read).join('\n'));
 }
