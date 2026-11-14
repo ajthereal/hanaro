@@ -122,8 +122,9 @@
   }
 
   /* ---------- data: show the saved copy first, refresh behind it ---------- */
-  function snap(k) { var raw = LS.get('hanaro.cache.' + k); try { return raw ? JSON.parse(raw) : null; } catch (e) { return null; } }
-  function save(k, d) { LS.set('hanaro.cache.' + k, JSON.stringify({ at: Date.now(), d: d })); }
+  var E = window.HanaroEngine, MEMK = { home: 1, review: 1, activity: 1, categories: 1, plan: 1 }, mem = {};
+  function snap(k) { if (MEMK[k]) return mem[k] || null; var raw = LS.get('hanaro.cache.' + k); try { return raw ? JSON.parse(raw) : null; } catch (e) { return null; } }
+  function save(k, d) { if (MEMK[k]) { mem[k] = { at: Date.now(), d: d }; return; } LS.set('hanaro.cache.' + k, JSON.stringify({ at: Date.now(), d: d })); }
   function patch(k, fn) { var c = snap(k); if (!c) return; fn(c.d); save(k, c.d); }
   function readQueue() { try { return JSON.parse(LS.get('hanaro.queue') || '[]'); } catch (e) { return []; } }
   var queue = readQueue(), flushing = null, bootP = null, storageWarned = false;
@@ -137,7 +138,35 @@
     setPill();
   }
   /** Changes are saved on this device first, then sent. If there is no connection they wait and retry. */
-  function send(action, args, label) { queue.push({ action: action, args: args, label: label }); saveQueue(); return flush(); }
+  function send(action, args, label) { applyLocal(action, args); queue.push({ action: action, args: args, label: label }); saveQueue(); return flush(); }
+  /** The change shows on every screen at once, from the phone's own copy. The server's row replaces it at the next sync. */
+  function applyLocal(action, args) {
+    if (!E.ready()) return;
+    var stamp = localIso(), today = stamp.slice(0, 10);
+    if (action === 'add_txn') E.localAdd(args, stamp);
+    else if (action === 'update_txn') E.localUpdate(args.id, args.changes, args.confirm);
+    else if (action === 'void_txn' || action === 'merge_dup') E.localStatus(args.id, 'void');
+    else if (action === 'restore_txn' || action === 'keep_both') E.localStatus(args.id, 'auto');
+    else if (action === 'mark_paid') E.localFlag(args.id, 'paid');
+    else if (action === 'set_balance') E.localBalance(args, today, stamp);
+    else if (action === 'set_limit') E.localLimit(args.account, Number(args.limit) || 0);
+    else return;
+    pushViews();
+  }
+  /** Fills the saved screen copies from the phone's data. */
+  function pushViews() {
+    if (!E.ready()) return;
+    var today = localIso().slice(0, 10);
+    save('home', E.view('home', today)); save('review', E.view('review', today)); save('activity', E.view('activity', today)); save('plan', E.view('plan', today));
+    save('categories', catsPayload());
+    var u = E.user(); if (u) setWho(u);
+    state.counts.review = snap('home').d.reviewCount; renderNav();
+  }
+  function catsPayload() {
+    var accts = E.accountList().map(function (a) { return { account: a.account, type: a.type === 'savings' ? 'bank' : a.type, entity: a.entity || '', owner: a.owner || '', payNow: Number(a.pay_within_days) > 0 }; });
+    return { categories: E.categories().map(function (c) { return { category: c.category, group: c.group, bucket: c.group, held: false }; }),
+      accounts: accts.filter(function (a) { return a.entity !== 'PT'; }).map(function (a) { return a.account; }), accountsFull: accts, apiV: E.apiV() };
+  }
   function hasPhoto(q) { return !!(q.args && q.args.photo); }
   function failedItem(q, msg) { banner('Could not save ' + (q.label || 'a change') + '. ' + msg + ' Please enter it again.', true, 0); }
   function gotData(d) { if (d && d.warning) banner(d.warning, true, 0); }
@@ -187,12 +216,11 @@
   function refresh() {
     return flush().then(function () {
       if (queue.length) { var qe = state.flushErr && !/Cannot reach/.test(state.flushErr); var e = new Error(qe ? 'Some changes are waiting to be sent: ' + state.flushErr : 'Cannot reach Hanaro. Check your internet connection.'); e.net = !qe; throw e; }
-      if (!bootP) bootP = api('bootstrap').then(function (b) {
-        ['home', 'review', 'activity', 'categories', 'plan'].forEach(function (k) { if (b[k]) save(k, b[k]); });
-        addPlaces(b.activity.items.map(function (t) { return { lat: t.lat, lng: t.lng, payee: t.payee, category: t.category, account: t.account }; }));
-        useCats(b.categories); setWho(b.home.user); state.counts.review = b.home.reviewCount; renderNav();
+      if (!bootP) bootP = api('sync', { since: E.since() }).then(function (d) {
+        E.absorb(d); pushViews(); lastSyncAt = Date.now();
+        addPlaces(snap('activity').d.items.map(function (t) { return { lat: t.lat, lng: t.lng, payee: t.payee, category: t.category, account: t.account }; }));
         state.offline = false; state.offlineSaid = false;
-        bootP = null; return b;
+        bootP = null; return d;
       }, function (e) {
         bootP = null;
         if (/does not know/.test(e.message)) throw new Error('Hanaro needs its server update. Paste the newest API code and redeploy it.');
@@ -201,6 +229,7 @@
       return bootP;
     });
   }
+  var lastSyncAt = 0;
   var wt;
   /** After a change was sent, show the server's own numbers once (not once per change). */
   function afterWrite(ok) {
@@ -354,37 +383,39 @@
   function paintBoard(v) {
     v.innerHTML = '<div class="board"><div id="bc1"></div><div id="bc2"></div><div id="bc3"></div></div>';
     var h = snap('home'), p = snap('plan'), r = snap('review');
-    if (h && usable('home', h)) paintHome($('bc1'), h.d);
-    if (p && usable('spending', p)) paintSpending($('bc2'), p.d, true);
+    if (h) paintHome($('bc1'), h.d);
+    if (p) paintSpending($('bc2'), p.d, true);
     if (r) paintReview($('bc3'), r.d);
   }
   var TITLE = 'font-size:30px;font-weight:300;letter-spacing:-.5px;margin:6px 0 0 2px';
-  function usable(name, c) { return c && (name !== 'home' || c.d.spentToday !== undefined) && (name !== 'spending' || c.d.fixed !== undefined); }
+  /** One screen from the phone's own copy. */
+  function paintNow(v, name) {
+    var today = localIso().slice(0, 10);
+    if (name === 'accounts') return paintAccounts(v, E.view('accounts', today));
+    if (name === 'spending' && state.spendTab !== 'plan') {
+      if (!state.spendMonth) state.spendMonth = today.slice(0, 7);
+      return paintReport(v, E.view('spending', today, state.spendMonth));
+    }
+    var paint = { board: paintBoard, home: paintHome, review: paintReview, activity: paintActivity, spending: paintSpending }[name];
+    var c = snap(name === 'spending' ? 'plan' : name === 'board' ? 'home' : name);
+    if (c) paint(v, c.d); else v.innerHTML = skeleton();
+  }
+  /** Opens at once from the phone's copy. A refresh runs behind it (at most every 20 seconds unless forced) and the screen is repainted only if nothing is being typed. */
   function render(force) {
     var v = $('view'), name = state.view, tok = ++state.token;
     v.setAttribute('data-v', name === 'home' && wide() ? 'board' : name);
     if (name === 'home' && wide()) name = 'board';
-    var newServer = (state.apiV || 1) >= 3;
     if (name === 'status') return renderStatus(v, tok);
     if (name === 'payees') return renderPayees(v, tok);
-    if (name === 'accounts') return newServer ? renderAccounts(v, tok, force) : renderStatus(v, tok);
-    if (name === 'spending' && newServer && state.spendTab !== 'plan') {
-      if (!state.spendMonth) state.spendMonth = localIso().slice(0, 7);
-      return renderRemote(v, tok, 'spend_' + state.spendMonth, 'spending', { month: state.spendMonth }, paintReport, force);
-    }
-    var paint = { board: paintBoard, home: paintHome, review: paintReview, activity: paintActivity, spending: paintSpending }[name];
-    var ck = name === 'spending' ? 'plan' : name === 'board' ? 'home' : name;
-    var c = snap(ck); if (!usable(name, c)) c = null;
-    if (c) paint(v, c.d); else v.innerHTML = skeleton();
-    if (c && !force && !queue.length && Date.now() - c.at < 20000) { setPill(); return; }
+    var had = E.ready();
+    if (had) paintNow(v, name); else v.innerHTML = skeleton();
+    if (had && !force && !queue.length && Date.now() - lastSyncAt < 20000) { setPill(); return; }
     state.busy = true; setPill();
     refresh().then(function () {
       state.busy = false; state.offline = false; setPill(undefined, false);
       if (tok !== state.token || editing(v)) return;
-      var fresh = snap(ck);
-      if (!fresh) { v.innerHTML = '<div class="card"><div class="label">Needs a server update</div><p class="note">Hanaro did not send the plan. Paste the newest API code into the Apps Script project and deploy it again, then reopen this screen.</p></div>'; return; }
-      paint(v, fresh.d);
-    }, function (e) { loadFail(e, tok, v, !!c, function () { render(true); }); });
+      paintNow(v, name);
+    }, function (e) { loadFail(e, tok, v, had, function () { render(true); }); });
   }
 
   /* ---------- Home ---------- */
@@ -395,38 +426,24 @@
     html += '<div class="card"><div class="label">Spent today</div><div class="big"><span class="rp">Rp</span><span class="n">' + esc(b.n) + '</span><span class="z">' + esc(b.z) + '</span></div>' +
       '<div style="font-size:14px">' + (h.spentTodayCount ? h.spentTodayCount + ' purchase' + (h.spentTodayCount === 1 ? '' : 's') : 'Nothing spent yet today') + '</div><div class="rule"></div>' +
       '<div class="two"><div><div class="tiny muted">This week</div><div class="stat">' + rpShort(h.spentWeek) + '</div></div><div class="sep"></div><div><div class="tiny muted">This month</div><div class="stat">' + rpShort(h.spentMonth) + '</div></div></div>' +
-      '<p class="note" style="margin-top:8px">About ' + rp(h.avgPerDay) + ' a day so far this month. Transfers, card payments, business accounts and money held for others are not counted.</p></div>';
-    if (h.pacing) {
-      var pc = h.pacing, pct = Math.max(0, Math.min(100, pc.amount ? pc.spent / pc.amount * 100 : 0));
-      var word = { on: 'On pace', near: 'Close to the line', over: 'Over the line' }[pc.status];
-      html += '<div class="card"><div class="cardhead"><div class="label">Flexible spending</div><div class="tiny ' + (pc.status === 'on' ? '' : 'bad') + '" style="font-weight:700;color:' + (pc.status === 'on' ? 'var(--good)' : pc.status === 'near' ? 'var(--yellowText)' : 'var(--warn)') + '">' + word + '</div></div>' +
-        '<div class="big" style="margin-top:4px"><span class="mid">' + rpShort(pc.spent) + '</span><span class="note" style="margin-left:8px">of ' + rpShort(pc.amount) + ' planned</span></div>' +
-        '<div class="pace ' + pc.status + '"><div class="f" style="width:' + pct.toFixed(1) + '%"></div><div class="tick" style="left:' + (pc.dayFrac * 100).toFixed(1) + '%"></div></div>' +
-        '<div class="pacefoot"><span>Day ' + pc.day + ' of ' + pc.daysInMonth + '</span><span>' + (pc.under >= 0 ? rpShort(pc.under) + ' under the line' : rpShort(-pc.under) + ' over the line') + '</span></div>' +
-        '<p class="note" style="margin-top:6px">About ' + rp(pc.perDay) + ' a day left for ' + pc.daysLeft + ' days.</p></div>';
-    } else if (!h.hasPlan) {
-      html += '<div class="card"><div class="label">Plan</div><p class="note">Set a planned amount for the month and Home will show how you are pacing.</p><button class="ghost small" data-go-spending>Set the plan</button></div>';
+      '<p class="note" style="margin-top:8px">About ' + rp(h.avgPerDay) + ' a day so far this month. Transfers, card payments, debt payments and company accounts are not counted.</p></div>';
+    html += '<button class="card tap" data-go-accounts style="text-align:left"><div class="cardhead"><div class="label">Money now</div><span class="chev" aria-hidden="true">›</span></div>' +
+      '<div class="kv"><span>In bank accounts</span><b>' + rp(h.cash) + '</b></div>' +
+      '<div class="kv"><span>Owed on cards</span><b>' + rp(h.owed) + '</b></div>' +
+      (h.limit ? '<div class="kv"><span>Still available on cards</span><b>' + rp(h.available) + '</b></div>' : '') +
+      (h.needsBalances ? '<p class="note" style="color:var(--warn);margin-top:6px">' + h.needsBalances + ' account' + (h.needsBalances === 1 ? '' : 's') + ' need a balance typed in once.</p>' : '') + '</button>';
+    if (h.uncleared && h.uncleared.count) {
+      html += '<div class="card"><div class="label">Not seen at the bank yet</div><div class="kv"><span>' + h.uncleared.count + ' entr' + (h.uncleared.count === 1 ? 'y' : 'ies') + '</span><b>' + rp(h.uncleared.amount) + '</b></div>' +
+        '<p class="note">' + (h.uncleared.old ? h.uncleared.old + ' of them ' + (h.uncleared.old === 1 ? 'is' : 'are') + ' more than a day old. A typo in the amount or account would show up here. ' : '') + 'When the bank email arrives, Hanaro matches it and the entry becomes cleared.</p></div>';
     }
-    if (h.compare && h.compare.hasLast) {
-      var cp = h.compare;
-      html += '<div class="card" style="flex-direction:row;justify-content:space-between;align-items:center"><div><div style="font-size:14px;font-weight:600">' + (cp.diff >= 0 ? rpShort(cp.diff) + ' less' : rpShort(-cp.diff) + ' more') + ' than last month</div><div class="note">at this point in the month</div></div>' + spark(cp.thisSeries, cp.lastSeries) + '</div>';
-    }
-    if (h.toPayCount || h.billsWeek.length) {
-      html += '<div class="card"><div class="label">Left to pay</div>';
-      if (h.toPayCount) html += '<div class="kv"><span>Card charges not paid yet (' + h.toPayCount + ')</span><b>' + rp(h.toPayTotal) + '</b></div>';
-      h.billsWeek.forEach(function (o) { html += '<div class="kv"><span>' + esc(o.name) + '<div class="sub' + (o.overdue ? ' warnt' : '') + '">' + (o.overdue ? 'Overdue, was due ' : 'Due ') + dayLabel(o.due) + '</div></span><span>' + rp(o.amount) + '</span></div>'; });
-      if (h.toPayCount) html += '<div class="btnrow"><button class="ghost small" data-go-review>See them</button><button class="primary small" data-paid-all>I paid them all</button></div><p class="note">Paid everything in one payment? Hanaro also notices a lump sum by itself when the bank email arrives.</p>';
-      html += '</div>';
-    }
-    if (h.heldByType && h.heldByType.length) {
-      html += '<div class="card"><div class="label">Held for others</div><div class="stat' + (h.heldTotal < 0 ? ' bad' : '') + '" style="margin-top:2px">' + rp(h.heldTotal) + '</div>' +
-        h.heldByType.map(function (x) { return '<div class="kv"><span>' + esc(x.type) + '</span><span class="' + (x.amount < 0 ? 'bad' : 'muted') + '">' + rp(x.amount) + '</span></div>'; }).join('') +
-        '<p class="note">' + (h.heldTotal < 0 ? 'You have sent out more than you were given. An entry for money received may be missing.' : 'This is other people\'s money. It is not counted as yours.') + '</p></div>';
+    if (h.toPayCount) {
+      html += '<div class="card"><div class="label">Left to pay</div><div class="kv"><span>Card charges not paid yet (' + h.toPayCount + ')</span><b>' + rp(h.toPayTotal) + '</b></div>' +
+        '<div class="btnrow"><button class="ghost small" data-go-review>See them</button><button class="primary small" data-paid-all>I paid them all</button></div><p class="note">Paid everything in one payment? Hanaro also notices a lump sum by itself when the bank email arrives.</p></div>';
     }
     if (h.reviewCount) html += '<button class="ghost" data-go-review>' + h.reviewCount + ' item' + (h.reviewCount === 1 ? '' : 's') + ' need you</button>';
     v.innerHTML = html;
     v.querySelectorAll('[data-go-review]').forEach(function (r) { r.addEventListener('click', function () { go('review'); }); });
-    v.querySelectorAll('[data-go-spending]').forEach(function (r) { r.addEventListener('click', function () { go('spending'); }); });
+    v.querySelectorAll('[data-go-accounts]').forEach(function (r) { r.addEventListener('click', function () { go('accounts'); }); });
     var pa = v.querySelector('[data-paid-all]');
     if (pa) pa.addEventListener('click', function () {
       var rc = snap('review'), list = rc ? rc.d.items.filter(function (i) { return i.kind === 'pay_now'; }) : [];
@@ -582,22 +599,21 @@
     var b = bigParts(d.total);
     html += '<div class="card"><div class="label">Spent in ' + PM[d.month.slice(5, 7)] + '</div><div class="big"><span class="rp">Rp</span><span class="n">' + esc(b.n) + '</span><span class="z">' + esc(b.z) + '</span></div>';
     if (!d.empty) {
-      html += '<div class="note">About ' + rp(d.avgPerDay) + ' a day.' + (d.fromHistory ? ' From your YNAB history.' : '') + '</div>';
-      if (isNow && d.compare && d.compare.hasPrev) html += '<div style="font-size:14px;font-weight:600;margin-top:4px">' + (d.compare.diff >= 0 ? rpShort(d.compare.diff) + ' less' : rpShort(-d.compare.diff) + ' more') + ' than ' + PM[d.compare.prevMonth.slice(5, 7)] + ' at this point</div>';
-      if (!d.fromHistory) html += '<div class="rule"></div>' + dayBars(d.series, todayN);
+      html += '<div class="note">About ' + rp(d.avgPerDay) + ' a day.' + (d.fromArchive ? ' From your YNAB history.' : '') + '</div>';
+      if (d.hasPrev) html += '<div style="font-size:14px;font-weight:600;margin-top:4px">' + PM[d.prevMonth.slice(5, 7)] + ' in total: ' + rpShort(d.prevTotal) + '</div>';
+      if (!d.fromArchive)  html += '<div class="rule"></div>' + dayBars(d.series, todayN);
     }
     html += '</div>';
     if (d.empty) html += '<div class="card empty">Nothing spent in ' + PM[d.month.slice(5, 7)] + ' yet.</div>';
     d.groups.forEach(function (g) {
       html += '<div class="card" style="gap:2px"><div class="cardhead"><div class="label">' + esc(g.group) + '</div><span class="note"><b>' + rpShort(g.amount) + '</b> · ' + (d.total ? Math.round(g.amount / d.total * 100) : 0) + '%</span></div>';
       g.categories.forEach(function (c) {
-        html += '<button class="crow" data-cat="' + esc(c.category) + '"><span class="cn"><span class="p">' + esc(c.category) + '</span><span class="s">' + (c.count ? c.count + ' purchase' + (c.count === 1 ? '' : 's') : '') + '</span></span><span class="cv">' + rp(c.amount) + '<span class="cbar"><span style="width:' + Math.max(2, c.pct) + '%"></span></span></span></button>';
+        html += '<button class="crow" data-cat="' + esc(c.category) + '"><span class="cn"><span class="p">' + esc(c.category) + '</span><span class="s">' + (c.count ? c.count + ' purchase' + (c.count === 1 ? '' : 's') : '') + '</span></span><span class="cv">' + rp(c.amount) + '<span class="cbar"><span style="width:' + Math.max(2, d.total ? Math.round(c.amount / d.total * 100) : 0) + '%"></span></span></span></button>';
       });
       html += '</div>';
     });
-    if (d.business && d.business.total) {
-      html += '<div class="card"><div class="cardhead"><div class="label">Business</div><span class="note"><b>' + rpShort(d.business.total) + '</b></span></div><p class="note">Spending on company accounts and what you filed for PT AHU. Receipts filed for the company are also in your family spending above.</p>' +
-        d.business.categories.slice(0, 8).map(function (c) { return '<div class="kv"><span>' + esc(c.category) + '</span><span>' + rp(c.amount) + '</span></div>'; }).join('') + '</div>';
+    if (d.other && d.other.length) {
+      html += '<div class="card"><div class="label">Not counted as everyday spending</div>' + d.other.map(function (o) { return '<div class="kv"><span>' + esc(o.group) + '</span><span>' + rp(o.amount) + '</span></div>'; }).join('') + '<p class="note">Debt payments, income and buffer groups are kept apart so the total above is what the family spent.</p></div>';
     }
     if (d.biggest && d.biggest.length > 1) {
       html += '<div class="card"><div class="label">Biggest purchases</div>' + d.biggest.map(function (t) { return '<div class="kv"><span>' + esc(t.payee || '(no name)') + '<div class="sub">' + dayLabel(t.date) + ' · ' + esc(t.category || 'No category') + '</div></span><span>' + rp(t.amount) + '</span></div>'; }).join('') + '</div>';
@@ -609,65 +625,78 @@
   }
 
   /* ---------- Accounts: banks, cards, debts, net worth ---------- */
-  function ageWord(days) { return days === null ? 'No balance yet' : days === 0 ? 'Updated today' : days === 1 ? 'Updated yesterday' : 'Updated ' + days + ' days ago'; }
-  function recalcAccounts(d) {
-    var held = d.held || 0, cash = 0, owe = 0;
-    d.banks.forEach(function (b) { if (b.entity !== 'PT' && b.balance !== null) cash += b.balance; });
-    d.debts.forEach(function (x) { if (x.entity !== 'PT' && x.balance !== null) owe += x.balance; });
-    d.cash = cash; d.owe = owe; d.netWorth = cash - held - owe;
+  function ageWord(days) { return days === null ? 'No balance yet' : days === 0 ? 'Confirmed today' : days === 1 ? 'Confirmed yesterday' : 'Confirmed ' + days + ' days ago'; }
+  function signed(n) { return (n > 0 ? '+' : n < 0 ? '−' : '') + rp(Math.abs(n)); }
+  function pendingTag(x) { return x.pending ? ' <span class="tag wait">' + x.pending + ' NOT AT BANK YET</span>' : ''; }
+  var MONTHS3 = MON;
+  function dueWord(iso) { return Number(iso.slice(8, 10)) + ' ' + MONTHS3[Number(iso.slice(5, 7)) - 1]; }
+  /** Type what the account really shows. Hanaro keeps the time and how far it was from what it expected. */
+  function confirmBalance(v, x, isCard) {
+    var cur = isCard ? x.owed : x.tracked, today = localIso().slice(0, 10);
+    dialog({ title: x.account, body: isCard ? 'How much does the card show as owed right now?' : 'What does this account show right now?' + (cur !== null ? ' Hanaro expects ' + rp(cur) + '.' : ''),
+      input: { numeric: true, placeholder: 'Rp', value: cur !== null ? Number(cur).toLocaleString('id-ID') : '' }, actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, fn: function (val, say) {
+        var amt = Number(String(val).replace(/[^\d]/g, '')); if (val === '' || isNaN(amt)) { say('Type the balance as a number.'); return false; }
+        var exp = E.trackedNow(x.account, today);
+        send('set_balance', { account: x.account, amount: amt, tracked: exp === null ? '' : exp }, 'the balance of ' + x.account).then(afterWrite);
+        var diff = exp === null ? 0 : amt - exp;
+        banner(diff ? 'Saved. This is ' + rp(Math.abs(diff)) + (diff > 0 ? ' more' : ' less') + (isCard ? ' owed' : '') + ' than Hanaro expected, so an entry may be missing.' : 'Saved. It matches what Hanaro expected.', !!diff && Math.abs(diff) > 0, diff ? 7000 : 2500);
+        render();
+      } }] });
   }
-  function renderAccounts(v, tok, force) {
-    renderRemote(v, tok, 'accounts', 'accounts', {}, paintAccounts, force);
+  function setLimit(v, x) {
+    dialog({ title: x.account, body: 'The credit limit of this card.', input: { numeric: true, placeholder: 'Rp', value: x.limit ? Number(x.limit).toLocaleString('id-ID') : '' }, actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, fn: function (val, say) {
+      var amt = Number(String(val).replace(/[^\d]/g, '')); if (val === '' || isNaN(amt)) { say('Type the limit as a number.'); return false; }
+      send('set_limit', { account: x.account, limit: amt }, 'the limit of ' + x.account).then(afterWrite); banner('Saved'); render();
+    } }] });
   }
   function paintAccounts(v, d) {
     var owner = state.role === 'owner';
     var html = '<div style="' + TITLE + '">Accounts</div>';
-    var nb = bigParts(Math.abs(d.netWorth));
-    html += '<div class="card"><div class="label">Net worth</div><div class="big"><span class="rp">' + (d.netWorth < 0 ? '−Rp' : 'Rp') + '</span><span class="n">' + esc(nb.n) + '</span><span class="z">' + esc(nb.z) + '</span></div>' +
-      '<div class="rule"></div><div class="kv"><span>In your accounts</span><span>' + rp(d.cash) + '</span></div>' +
-      (d.held ? '<div class="kv"><span>Held for others</span><span>−' + rp(d.held) + '</span></div>' : '') +
-      '<div class="kv"><span>Debts</span><span>−' + rp(d.owe) + '</span></div>' +
-      (d.note ? '<p class="note" style="margin-top:6px;color:var(--warn)">' + esc(d.note) + '</p>' : '<p class="note" style="margin-top:6px">Company (PT) accounts and debts are not counted. Money held for others is taken off.</p>') + '</div>';
+    var nb = bigParts(d.cash);
+    html += '<div class="card"><div class="label">In bank accounts</div><div class="big"><span class="rp">Rp</span><span class="n">' + esc(nb.n) + '</span><span class="z">' + esc(nb.z) + '</span></div>' +
+      '<div class="rule"></div><div class="kv"><span>Owed on cards and loans</span><b>' + rp(d.owed) + '</b></div>' +
+      (d.limit ? '<div class="kv"><span>Still available on cards</span><b>' + rp(d.available) + '</b></div>' : '') +
+      (d.notes.length ? d.notes.map(function (n) { return '<p class="note" style="margin-top:6px;color:var(--warn)">' + esc(n) + '</p>'; }).join('') : '<p class="note" style="margin-top:6px">Each balance is the last one you confirmed plus everything entered since. Company (PT) accounts are not counted.</p>') + '</div>';
+    if (d.uncleared.count) html += '<div class="card"><div class="label">Not seen at the bank yet</div><div class="kv"><span>' + d.uncleared.count + ' entr' + (d.uncleared.count === 1 ? 'y' : 'ies') + '</span><b>' + rp(d.uncleared.amount) + '</b></div><p class="note">The bank email clears an entry. ' + (d.uncleared.old ? d.uncleared.old + ' ' + (d.uncleared.old === 1 ? 'is' : 'are') + ' more than a day old: check the amount and the account.' : 'Nothing is old yet.') + '</p></div>';
     html += '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Bank accounts</div></div>';
     d.banks.forEach(function (b, i) {
-      var old = b.ageDays !== null && b.ageDays >= 3;
-      html += '<button class="prow2" data-bank="' + i + '"' + (owner ? '' : ' disabled') + '><span class="l"><span class="p">' + esc(b.account) + (b.entity === 'PT' ? ' <span class="tag gray">PT AHU</span>' : '') + '</span><span class="s' + (old || b.balance === null ? ' warnt' : '') + '">' + ageWord(b.ageDays) + '</span></span><span class="r">' + (b.balance === null ? '<span class="muted">Set</span>' : rp(b.balance)) + '</span></button>';
+      var old = b.ageDays !== null && b.ageDays >= 7;
+      html += '<button class="prow2" data-bank="' + i + '"' + (owner ? '' : ' disabled') + '><span class="l"><span class="p">' + esc(b.account) + (b.entity === 'PT' ? ' <span class="tag gray">PT AHU</span>' : '') + pendingTag(b) + '</span>' +
+        '<span class="s' + (old || b.confirmed === null ? ' warnt' : '') + '">' + (b.confirmed === null ? 'No balance yet. Tap to set it.' : ageWord(b.ageDays) + (b.moved ? ' · ' + signed(b.moved) + ' since' : '') + (old ? ' · check it' : '')) + '</span></span>' +
+        '<span class="r">' + (b.tracked === null ? '<span class="muted">Set</span>' : rp(b.tracked)) + '</span></button>';
     });
     if (!d.banks.length) html += '<p class="note" style="padding:10px 0 0">No bank accounts yet.</p>';
-    if (owner) html += '<p class="note" style="padding-top:8px">Tap an account to type what it shows today.</p>';
+    if (owner && d.banks.length) html += '<p class="note" style="padding-top:8px">Tap an account to confirm what it shows today. Do it now and then so Hanaro stays right.</p>';
     html += '</div>';
-    if (d.debts.length) {
-      var intr = d.debts.reduce(function (a, x) { return a + (x.monthlyInterest || 0); }, 0);
-      html += '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Debts</div><span class="note">' + rpShort(d.owe) + ' left</span></div>';
-      d.debts.forEach(function (x, i) {
-        var bits = []; if (x.rate !== null) bits.push(Math.round(x.rate * 1000) / 10 + '% a year'); if (x.minimum) bits.push('minimum ' + rpShort(x.minimum) + (x.dueDay ? ' on the ' + x.dueDay + 'th' : ''));
-        html += '<button class="prow2" data-debt="' + i + '"' + (owner ? '' : ' disabled') + '><span class="l"><span class="p">' + esc(x.debt) + (d.payFirst === x.debt ? ' <span class="tag pay">PAY FIRST</span>' : '') + '</span><span class="s">' + esc(bits.join(' · ') || 'No terms set') + '</span></span><span class="r">' + (x.balance === null ? '<span class="muted">Set</span>' : rp(x.balance)) + '</span></button>';
+    if (d.cards.length) {
+      html += '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Credit cards</div><span class="note">' + rpShort(d.owed) + ' owed</span></div>';
+      d.cards.forEach(function (c, i) {
+        var cls = c.util === null ? '' : c.util >= 100 ? ' max' : c.util >= 80 ? ' hi' : '';
+        html += '<button class="prow2" data-card="' + i + '"' + (owner ? '' : ' disabled') + ' style="align-items:flex-start;flex-wrap:wrap"><span class="l" style="flex:1 1 60%"><span class="p">' + esc(c.account) + pendingTag(c) + '</span>' +
+          '<span class="s">' + (c.owed === null ? 'No balance yet. Tap to set what is owed.' : c.limit ? rpShort(c.available) + ' available of ' + rpShort(c.limit) + ' · ' + c.util + '% used' : 'No limit set') + (c.due ? ' · due ' + dueWord(c.due) : '') + '</span>' +
+          (c.unpaidCount ? '<span class="s warnt">' + c.unpaidCount + ' charge' + (c.unpaidCount === 1 ? '' : 's') + ' to pay: ' + rp(c.unpaidTotal) + '</span>' : '') + '</span>' +
+          '<span class="r">' + (c.owed === null ? '<span class="muted">Set</span>' : rp(c.owed)) + '</span>' +
+          (c.limit && c.owed !== null ? '<span class="meter' + cls + '" style="flex:1 1 100%"><span style="width:' + Math.min(100, Math.max(1, c.util)) + '%"></span></span>' : '') + '</button>';
       });
-      if (intr) html += '<p class="note" style="padding-top:8px">Interest costs about ' + rp(intr) + ' a month in total.' + (d.payFirst ? ' After the minimums, extra money does the most good on ' + esc(d.payFirst) + ' (highest interest).' : '') + '</p>';
-      if (owner) html += '<p class="note" style="padding-top:4px">Tap a debt to type what is left.</p>';
+      if (owner) html += '<p class="note" style="padding-top:8px">Tap a card to confirm what is owed or set its limit.</p>';
+      html += '</div>';
+    }
+    if (d.loans.length) {
+      html += '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Loans</div></div>';
+      d.loans.forEach(function (x, i) {
+        html += '<button class="prow2" data-loan="' + i + '"' + (owner ? '' : ' disabled') + '><span class="l"><span class="p">' + esc(x.account) + '</span><span class="s">' + (x.confirmed === null ? 'No balance yet' : ageWord(x.ageDays)) + '</span></span><span class="r">' + (x.owed === null ? '<span class="muted">Set</span>' : rp(x.owed)) + '</span></button>';
+      });
       html += '</div>';
     }
     html += '<div id="health"></div>';
     html += '<div class="card"><div class="label">Places and payees</div><p class="note">See where you spend and set the default category for each place.</p><button class="ghost small" id="openPlaces">Open places</button></div>';
     html += '<div class="card"><div class="label">This device</div><p class="note">The link and key are stored on this device only.</p><button class="link" id="signOut">Disconnect this device</button></div>';
     v.innerHTML = html;
-    v.querySelectorAll('[data-bank]').forEach(function (b) { b.addEventListener('click', function () {
-      var x = d.banks[Number(b.getAttribute('data-bank'))];
-      dialog({ title: x.account, body: 'What does this account show right now?', input: { numeric: true, placeholder: 'Rp', value: x.balance !== null ? Number(x.balance).toLocaleString('id-ID') : '' }, actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, fn: function (val, say) {
-        var amt = Number(String(val).replace(/[^\d]/g, '')); if (val === '' || isNaN(amt)) { say('Type the balance as a number.'); return false; }
-        patch('accounts', function (dd) { dd.banks.forEach(function (y) { if (y.account === x.account) { y.balance = amt; y.ageDays = 0; } }); recalcAccounts(dd); });
-        var cc = snap('accounts'); if (cc) paintAccounts(v, cc.d);
-        banner('Saved'); send('set_balance', { account: x.account, amount: amt }, 'the balance of ' + x.account).then(afterWrite);
-      } }] });
-    }); });
-    v.querySelectorAll('[data-debt]').forEach(function (b) { b.addEventListener('click', function () {
-      var x = d.debts[Number(b.getAttribute('data-debt'))];
-      dialog({ title: x.debt, body: 'How much is left to pay on this?', input: { numeric: true, placeholder: 'Rp', value: x.balance !== null ? Number(x.balance).toLocaleString('id-ID') : '' }, actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, fn: function (val, say) {
-        var amt = Number(String(val).replace(/[^\d]/g, '')); if (val === '' || isNaN(amt)) { say('Type what is left as a number.'); return false; }
-        patch('accounts', function (dd) { dd.debts.forEach(function (y) { if (y.debt === x.debt) y.balance = amt; }); recalcAccounts(dd); });
-        var cc = snap('accounts'); if (cc) paintAccounts(v, cc.d);
-        banner('Saved'); send('set_debt', { debt: x.debt, balance: amt }, 'what is left on ' + x.debt).then(afterWrite);
-      } }] });
+    v.querySelectorAll('[data-bank]').forEach(function (b) { b.addEventListener('click', function () { confirmBalance(v, d.banks[Number(b.getAttribute('data-bank'))], false); }); });
+    v.querySelectorAll('[data-loan]').forEach(function (b) { b.addEventListener('click', function () { confirmBalance(v, d.loans[Number(b.getAttribute('data-loan'))], true); }); });
+    v.querySelectorAll('[data-card]').forEach(function (b) { b.addEventListener('click', function () {
+      var x = d.cards[Number(b.getAttribute('data-card'))];
+      dialog({ title: x.account, body: 'What do you want to do?', actions: [{ label: 'Cancel' }, { label: 'Set limit', fn: function () { setTimeout(function () { setLimit(v, x); }, 0); } }, { label: 'Confirm owed', primary: true, fn: function () { setTimeout(function () { confirmBalance(v, x, true); }, 0); } }] });
     }); });
     $('openPlaces').addEventListener('click', function () { go('payees'); });
     $('signOut').addEventListener('click', disconnect);
@@ -676,8 +705,8 @@
   function disconnect() {
     confirmBox('Disconnect this device from Hanaro? Changes still waiting to be sent will be lost.', 'Disconnect', function () {
       ['key', 'url', 'queue', 'lastsync'].forEach(function (k) { LS.del('hanaro.' + k); });
-      ['home', 'review', 'activity', 'categories', 'status', 'plan', 'accounts', 'payees'].forEach(function (k) { LS.del('hanaro.cache.' + k); });
-      location.reload();
+      ['status', 'payees'].forEach(function (k) { LS.del('hanaro.cache.' + k); });
+      E.clear().then(function () { location.reload(); });
     }, true);
   }
   /** Email sync and backup, from the same Status request as before, shown at the bottom of Accounts. */
@@ -1649,9 +1678,8 @@
   /* ---------- start ---------- */
   function start() {
     $('setup').hidden = true; $('app').hidden = false; $('nav').hidden = false;
-    var hc = snap('home'); if (hc && hc.d.user) { setWho(hc.d.user); state.counts.review = hc.d.reviewCount || 0; }
-    var cc = snap('categories'); if (cc) useCats(cc.d);
-    renderNav(); render();
+    renderNav();
+    E.load().then(function (ok) { if (ok) pushViews(); render(); });
   }
   document.addEventListener('visibilitychange', function () { if (!document.hidden && conf().key && $('sheet').hidden && $('dlg').hidden) { if (queue.length) flush().then(afterWrite); render(); } });
   window.addEventListener('online', function () { state.offline = false; if (conf().key) { flush().then(afterWrite); setPill(); } });

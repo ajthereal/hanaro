@@ -299,3 +299,8 @@ button.dangerbtn{color:var(--warn);border-color:#F3B8AF}
 .ptr{position:fixed;top:56px;left:0;right:0;text-align:center;font-size:13px;color:var(--teal);z-index:40;pointer-events:none}
 
 .sub.warnt{color:var(--warn);font-weight:600}
+/* v2: a whole card that is a button (Home "Money now"), the card meters and the clearing marks */
+button.card.tap{width:100%;border:0;font:inherit;color:var(--text);cursor:pointer;text-align:left}
+button.card.tap .chev{position:static;font-size:22px;color:var(--muted)}
+.meter{height:8px;border-radius:99px;background:#DCEBE8;overflow:hidden;margin:6px 0 2px}.meter>span{display:block;height:100%;border-radius:99px;background:#13867C}.meter.hi>span{background:#E0A800}.meter.max>span{background:var(--warn)}
+.tag.clr{background:#E6F7EE;color:#0B6F4A}.tag.wait{background:#FFF4D6;color:var(--yellowText)}

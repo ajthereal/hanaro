@@ -60,6 +60,7 @@
     home: function (today) { var h = C.homeView_(ctx(today)); h.user = S.user; return h; },
     accounts: function (today) { return C.accountsView_(ctx(today)); },
     spending: function (today, month) { var c = ctx(today); return C.spendReport_({ month: month || today.slice(0, 7), today: today, accounts: S.accounts, txns: c.txns, cats: S.cats, archive: S.archive, cutover: S.cutover }); },
+    plan: function (today) { return C.computePlan_({ plan: S.plan, txns: C.dropMatchedManual_(S.txns), accounts: S.accounts, today: today, paid: S.paid }); },
     review: function () { return { items: C.reviewList_({ txns: C.dropMatchedManual_(S.txns), accounts: S.accounts }) }; },
     activity: function () { var c = ctx(''); return { items: C.activityList_({ txns: c.txns, accounts: S.accounts }) }; }
   };
@@ -107,6 +108,12 @@
     t._local = true; persist();
   }
   function localStatus(id, status) { if (!S) return; var i = findIdx(id); if (i < 0) return; S.txns[i].status = status; S.txns[i]._local = true; persist(); }
+  function localFlag(id, flag) {
+    if (!S) return; var i = findIdx(id); if (i < 0) return;
+    var f = String(S.txns[i].flags || '').split(',').filter(function (x) { return x; });
+    if (f.indexOf(flag) === -1) f.push(flag);
+    S.txns[i].flags = f.join(','); S.txns[i]._local = true; persist();
+  }
   function localBalance(a, today, at) {
     if (!S) return;
     S.balances.push({ date_confirmed: today, account: a.account, confirmed_balance: Number(a.amount), method: 'manual', confirmed_at: at });
@@ -126,5 +133,5 @@
   }
 
   root.HanaroEngine = { load: load, ready: ready, clear: clear, absorb: absorb, since: since, view: view, categories: categories, accountList: accountList,
-    localAdd: localAdd, localUpdate: localUpdate, localStatus: localStatus, localBalance: localBalance, localLimit: localLimit, trackedNow: trackedNow, user: function () { return S && S.user; }, apiV: function () { return S ? S.apiV : 0; } };
+    localAdd: localAdd, localUpdate: localUpdate, localStatus: localStatus, localFlag: localFlag, localBalance: localBalance, localLimit: localLimit, trackedNow: trackedNow, user: function () { return S && S.user; }, apiV: function () { return S ? S.apiV : 0; } };
 })(typeof window !== 'undefined' ? window : this);

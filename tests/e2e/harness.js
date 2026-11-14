@@ -37,7 +37,7 @@ function seed() {
       t('t_aaaaaaaaaa08', 6 * D, { idr_amount: 38000, account: 'Bank A', payee: 'COFFEE SHOP', category: 'Eating out', bucket: 'Food', source: 'manual', who: 'AJ' }),
       t('t_aaaaaaaaaa09', 1 * H, { idr_amount: '', account: '', payee: 'Unreadable bank notice', status: 'needs_review', txn_type: '', memo: 'Could not read this email: no amount found' })
     ],
-    Categories: [['category', 'bucket', 'counts_in_bucket', 'ynab_categories_mapped', 'active'], ['Eating out', 'Food', 'Y', '', 'Y'], ['Groceries', 'Food', 'Y', '', 'Y'], ['Utilities', 'Home', 'Y', '', 'Y'], ['Fuel', 'Car', 'Y', '', 'Y'], ['Operational Office', 'Business', 'Y', '', 'Y'], ['Own transfer', '', 'Y', '', 'Y'], ['Income', '', 'Y', '', 'Y'], ['Held: Customer order', '', 'HELD', '', 'Y']],
+    Categories: [['group', 'category', 'counts', 'active', 'sort', 'ynab_id'], ['Food', 'Eating out', 'Y', 'Y', 1, ''], ['Food', 'Groceries', 'Y', 'Y', 2, ''], ['Home', 'Utilities', 'Y', 'Y', 3, ''], ['Car', 'Fuel', 'Y', 'Y', 4, ''], ['Business', 'Operational Office', 'Y', 'Y', 5, '']],
     Rules: [['rule_id', 'match_type', 'match_text', 'category', 'bucket', 'auto_confirm', 'times_used']],
     Audit: [['timestamp', 'who', 'action', 'tab', 'row_id', 'field', 'before', 'after']],
     Log: [['timestamp', 'component', 'level', 'message', 'detail']],
@@ -45,7 +45,7 @@ function seed() {
     Accounts: [['account', 'type', 'entity', 'owner', 'last4', 'active', 'allowed_for_new_spend', 'carries_balance', 'pay_within_days'],
       ['Card A', 'credit card', 'Household', 'AJ', '1111', 'Y', 'N', 'Y', 1], ['Bank A', 'bank', 'Household', 'AJ', '2222', 'Y', 'Y', '', ''], ['Bank B', 'bank', 'Household', 'Cynthia', '3333', 'Y', 'Y', '', ''], ['Bank PT', 'bank', 'PT', 'AJ', '4444', 'Y', 'Y', '', '']],
     Buckets: [['bucket', 'month', 'cap_idr', 'owner', 'set_by']],
-    Balances: [['date_confirmed', 'account', 'confirmed_balance', 'method', 'entered_by'], [day(now - 5 * D), 'Bank A', 12000000, 'manual', 'AJ'], [day(now - 1 * D), 'Bank B', 3500000, 'manual', 'Cynthia']],
+    Balances: [['date_confirmed', 'account', 'confirmed_balance', 'method', 'entered_by'], [day(now - 5 * D), 'Bank A', 12000000, 'manual', 'AJ'], [day(now - 1 * D), 'Bank B', 3500000, 'manual', 'Cynthia'], [day(now - 1 * D), 'Card A', 1000000, 'manual', 'AJ']],
     Bills: [['bill', 'amount_idr', 'due_day', 'active', 'last_paid']],
     Debts: [['debt', 'entity', 'minimum', 'due_day', 'balance_idr', 'effective_rate_annual', 'weekend'], ['Loan X', 'Household', 500000, 16, 8000000, 0.12, 'before'], ['Card Y', 'Household', 100000, 20, 1500000, 0.36, '']],
     Inbox_Raw: [['message_id', 'received_at', 'sender', 'subject', 'parser', 'parse_status', 'parse_error', 'processed_at', 'transaction_id'], ['m1', jak(now - 20 * 60000), 'bca@bca.co.id', 'x', 'bca', 'parsed', '', '', 't_aaaaaaaaaa01']],

@@ -124,8 +124,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await page.click('[data-bank="0"]'); await page.fill('.dbox .di', '13500000'); await page.click('.dbox .primary'); await sleep(1800);
   const bal = S.book.data.Balances.slice(1).filter((r) => r[1] === 'Bank A').pop();
   ok('balance typed in a dialog reached the Sheet', Number(bal[2]) === 13500000, bal);
-  await page.click('[data-debt="0"]'); await page.fill('.dbox .di', '7000000'); await page.click('.dbox .primary'); await sleep(1800);
-  ok('debt balance saved once to its own history tab', !!S.book.data.DebtBalances && S.book.data.DebtBalances.length === 2, S.book.data.DebtBalances);
+  await page.click('[data-card="0"]'); await page.click('.dbox button:has-text("Set limit")'); await page.fill('.dbox .di', '9000000'); await page.click('.dbox .primary'); await sleep(1800);
+  const AH = S.book.data.Accounts[0], cardRow = S.book.data.Accounts.find((r) => r[0] === 'Card A');
+  ok('card limit typed in a dialog reached the Sheet', Number(cardRow[AH.indexOf('credit_limit')]) === 9000000, cardRow);
+  ok('the card now shows what is still available', /available of/.test(await page.textContent('[data-card="0"]')), await page.textContent('[data-card="0"]'));
   await shot(page, '13-accounts-after');
 
   // Review
@@ -137,7 +139,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const cy = await phone('cynthia');
   await cy.goto(base + '/'); await cy.waitForSelector('.big .n'); await cy.click('nav [data-go="activity"]'); await cy.waitForSelector('.arow'); await sleep(300);
   ok('Cynthia does not see the company entry', (await cy.$$('.arow:has-text("OFFICE SUPPLY")')).length === 0);
-  ok('AJ does see it', (await page.evaluate(() => JSON.parse(localStorage.getItem('hanaro.cache.activity')).d.items.some((i) => i.payee === 'OFFICE SUPPLY'))));
+  ok('AJ does see it', (await page.evaluate(() => window.HanaroEngine.view('activity', '').items.some((i) => i.payee === 'OFFICE SUPPLY'))));
   await shot(cy, '15-cynthia-activity');
   await cy.click('#addBtn'); await cy.waitForSelector('#sheet:not([hidden])'); await cy.click('#accBtn'); await cy.waitForSelector('#picker:not([hidden])');
   ok('Cynthia cannot pick the company account', (await cy.$$('#pickList [data-cat="Bank PT"]')).length === 0);
