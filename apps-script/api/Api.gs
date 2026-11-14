@@ -13,7 +13,7 @@ var SHEET_ID = 'PASTE_SHEET_ID_HERE';   // set once in the pasted copy, never co
 var ROLES = { aj: 'owner', cynthia: 'partner' };
 var NAMES = { aj: 'AJ', cynthia: 'Cynthia', system: 'Hanaro (auto)' };
 var MAX_FAILS = 10;
-var API_V = 4;            // 2: save without a category, past dates. 3: ids from the phone, batches, edit, delete, transfers, reports
+var API_V = 4;            // 2: save without a category, past dates. 3: ids from the phone, batches, edit, delete, transfers, reports. 4: sync, card limits, confirmed balances with time
 var TX_WINDOW = 3000;     // the newest rows of Transactions that every screen reads (about 8+ months)
 var CACHE_SECONDS = 45;
 var DEFER_AUDIT_ = false, AUDIT_BUF_ = [];
@@ -326,7 +326,7 @@ function sync_(book, who, req) {
   return {
     apiV: API_V, now: nowIso_(), full: !req.since, newest: newest, user: { name: NAMES[who], role: role },
     accounts: partner ? accounts.filter(function (x) { return !pt[x.account]; }) : accounts,
-    balances: rows_(book, 'Balances'), txns: txns, cats: rows_(book, 'Categories'), archive: arch,
+    balances: rows_(book, 'Balances').filter(function (b) { return !partner || !pt[b.account]; }), txns: txns, cats: rows_(book, 'Categories'), archive: arch,
     plan: planRows_(book), paid: paidRows_(book), summary: rows_(book, 'Summary'), cutover: summary.cutover_date || ''
   };
 }

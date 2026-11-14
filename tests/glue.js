@@ -201,7 +201,9 @@ const sy = run("handle_({ action: 'sync' }, 'aj')");
 eq('sync sends the whole picture the first time', [sy.apiV, sy.full, sy.accounts.length, sy.txns.length > 0, Array.isArray(sy.archive)], [4, true, 4, true, true]);
 const sy2 = run("handle_({ action: 'sync', since: '" + sy.newest + "' }, 'aj')");
 eq('sync with a marker sends only what changed', [sy2.full, sy2.txns.filter((x) => x.updated_at && x.updated_at <= sy.newest).length], [false, 0]);
-eq('Cynthia\'s sync has no company account', run("handle_({ action: 'sync' }, 'cynthia')").accounts.some((x) => x.entity === 'PT'), false);
+run("handle_({ action: 'set_balance', account: 'Bank PT', amount: 1234567 }, 'aj')");
+const cs = run("handle_({ action: 'sync' }, 'cynthia')");
+eq('Cynthia\'s sync has no company account, company balance or company entry', [cs.accounts.some((x) => x.entity === 'PT'), cs.balances.some((b) => b.account === 'Bank PT')], [false, false]);
 let lerr = ''; try { run("handle_({ action: 'set_limit', account: 'Card A', limit: 8000000 }, 'cynthia')"); } catch (e) { lerr = e.userMessage || e.message; }
 eq('only AJ sets a card limit', lerr, 'Only AJ can change a card limit.');
 const lim = run("handle_({ action: 'set_limit', account: 'Card A', limit: 8000000 }, 'aj')");
