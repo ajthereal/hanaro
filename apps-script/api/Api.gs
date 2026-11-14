@@ -19,9 +19,9 @@ var CACHE_SECONDS = 45;
 var DEFER_AUDIT_ = false, AUDIT_BUF_ = [];
 
 /** Actions that change the Sheet. Only these take the lock. */
-var WRITES_ = { set_plan: 1, remove_plan: 1, plan_paid: 1, set_payee_category: 1, attach_photo: 1, add_held_type: 1, update_txn: 1, add_txn: 1, mark_paid: 1, keep_both: 1, merge_dup: 1, set_balance: 1, set_cap: 1, set_debt: 1, void_txn: 1, restore_txn: 1, set_limit: 1, batch: 1 };
+var WRITES_ = { set_plan: 1, remove_plan: 1, plan_paid: 1, set_payee_category: 1, attach_photo: 1, add_held_type: 1, update_txn: 1, add_txn: 1, mark_paid: 1, keep_both: 1, merge_dup: 1, set_balance: 1, set_cap: 1, set_debt: 1, void_txn: 1, restore_txn: 1, set_limit: 1, set_target: 1, set_four_walls: 1, move_money: 1, set_debt_order: 1, set_budget_settings: 1, plan_next_month: 1, batch: 1 };
 /** Actions that may travel together in one batch request. */
-var BATCHABLE_ = { set_plan: 1, remove_plan: 1, plan_paid: 1, set_payee_category: 1, attach_photo: 1, add_held_type: 1, update_txn: 1, add_txn: 1, mark_paid: 1, keep_both: 1, merge_dup: 1, set_balance: 1, set_cap: 1, set_debt: 1, void_txn: 1, restore_txn: 1, set_limit: 1 };
+var BATCHABLE_ = { set_plan: 1, remove_plan: 1, plan_paid: 1, set_payee_category: 1, attach_photo: 1, add_held_type: 1, update_txn: 1, add_txn: 1, mark_paid: 1, keep_both: 1, merge_dup: 1, set_balance: 1, set_cap: 1, set_debt: 1, void_txn: 1, restore_txn: 1, set_limit: 1, set_target: 1, set_four_walls: 1, move_money: 1, set_debt_order: 1, set_budget_settings: 1, plan_next_month: 1 };
 
 function book_() { return SpreadsheetApp.openById(SHEET_ID); }
 
@@ -325,6 +325,8 @@ function sync_(book, who, req) {
   var role = ROLES[who], partner = role === 'partner';
   var accounts = rows_(book, 'Accounts'), pt = ptAccounts_(accounts);
   var all = rowsTail_(book, 'Transactions', TX_WINDOW);
+  // A partner never sees company accounts, but the money moved from them into a personal account is budget income. It is sent without any account name.
+  var ptIncomes = partner ? budgetIncomes_(all, accounts, []).filter(function (i) { return pt[i.from]; }).map(function (i) { return { id: 'pt_' + i.id, date: i.date, amount: i.amount, to: i.to }; }) : [];
   if (partner) all = all.filter(function (t) { return !pt[t.account]; });
   var txns = changedSince_(all, req.since), newest = req.since || '';
   all.forEach(function (t) { if (t.updated_at && String(t.updated_at) > newest) newest = String(t.updated_at); });
@@ -339,8 +341,42 @@ function sync_(book, who, req) {
     apiV: API_V, now: nowIso_(), full: !req.since, newest: newest, user: { name: NAMES[who], role: role },
     accounts: partner ? accounts.filter(function (x) { return !pt[x.account]; }) : accounts,
     balances: rows_(book, 'Balances').filter(function (b) { return !partner || !pt[b.account]; }), txns: txns, cats: rows_(book, 'Categories'), archive: arch,
-    plan: planRows_(book), paid: paidRows_(book), summary: rows_(book, 'Summary'), cutover: summary.cutover_date || ''
+    plan: planRows_(book), paid: paidRows_(book), summary: rows_(book, 'Summary'), cutover: summary.cutover_date || '',
+    budgetV: BUDGET_V_, budget: optRows_(book, 'Budget'), moves: optRows_(book, 'BudgetMoves'), bset: optRows_(book, 'BudgetSettings'), dorder: partner ? [] : optRows_(book, 'DebtOrder'),
+    debts: optRows_(book, 'Debts').filter(function (x) { return !partner || !x.entity || x.entity === 'Household'; }), debtBal: optRows_(book, 'DebtBalances'), ptIncomes: ptIncomes
   };
+}
+
+/** Every row of a tab that may not exist yet (the budget tabs are made the first time they are written). */
+function optRows_(book, name) { return book.getSheetByName(name) ? rows_(book, name) : []; }
+
+function ensureTab_(book, name, headers) {
+  var sh = book.getSheetByName(name);
+  if (!sh) { sh = book.insertSheet(name); sh.getRange(1, 1, 1, headers.length).setValues([headers]); }
+  return sh;
+}
+
+/**
+ * The budget writes: set a category target, mark Four Walls, move money, pin the debt order, save the budget settings and save
+ * the monthly plan. Each one only appends rows to a budget tab (history is never overwritten) and writes an Audit line.
+ * The checks and the rows come from buildBudgetWrite_ in Core.gs, the same code the phone uses to show the change at once.
+ */
+function budgetWrite_(book, who, req) {
+  var a = req.action, today = todayFor_(req);
+  var d = { plan: planRows_(book), budget: optRows_(book, 'Budget'), bset: optRows_(book, 'BudgetSettings') };
+  var o = { who: NAMES[who], at: nowIso_(), today: today, accounts: rows_(book, 'Accounts'), settings: budgetSettings_(d.bset), id: 'mv_' + Utilities.getUuid().replace(/-/g, '').slice(0, 12) };
+  var month = today.slice(0, 7), pm = /^\d{4}-\d{2}$/.test(String(req.month || '')) ? req.month : (a === 'plan_next_month' ? nextMonth_(month) : month);
+  o.prev = monthTargets_(d, pm);
+  if (a === 'set_four_walls') o.wallsBefore = !!budgetWalls_(d.budget)[String(req.category || '').trim()];
+  var res = buildBudgetWrite_(a, req, o);
+  if (res.error) throw userError_(res.error);
+  if (res.moveId) {
+    var dup = optRows_(book, 'BudgetMoves').some(function (r) { return r.id === res.moveId; });
+    if (dup) return { saved: true, duplicate: true };
+  }
+  res.writes.forEach(function (w) { ensureTab_(book, w.tab, BUDGET_TABS_[w.tab]); append_(book, w.tab, w.rows); });
+  res.audit.forEach(function (x) { audit_(book, NAMES[who], x.action, x.tab, x.row, x.field, x.before, x.after); });
+  return { saved: true };
 }
 
 /** Sets or clears a card's credit limit. */
@@ -424,6 +460,11 @@ function dispatch_(book, who, req) {
   if (a === 'bootstrap') return bootstrap_(book, who, req);
   if (a === 'sync') return sync_(book, who, req);
   if (a === 'set_limit') { if (!owner) throw userError_('Only AJ can change a card limit.'); return setLimit_(book, who, req); }
+  if (a === 'set_target' || a === 'set_four_walls' || a === 'move_money') return budgetWrite_(book, who, req);
+  if (a === 'set_debt_order' || a === 'set_budget_settings' || a === 'plan_next_month') {
+    if (!owner) throw userError_('Only AJ can change this part of the budget.');
+    return budgetWrite_(book, who, req);
+  }
   if (a === 'plan') return planView_(book, who, req);
   if (a === 'spending') return spendingAction_(book, who, req);
   if (a === 'accounts') return accountsAction_(book, who, req);
@@ -893,6 +934,7 @@ function reconcile_(book, who) {
       setField_(book, who, e, 'orig_amount', oa); setField_(book, who, e, 'orig_currency', mv('orig_currency'));
       if (oa > 0 && real > 0) setField_(book, who, e, 'fx_rate', Math.round(real / oa * 10000) / 10000);
     }
+    if (mv('to_account') && !ev('to_account')) setField_(book, who, e, 'to_account', mv('to_account'));
     if (mv('entity')) setField_(book, who, e, 'entity', mv('entity'));
     if (mv('pt_file')) setField_(book, who, e, 'pt_file', mv('pt_file'));
     // A typed purchase that matched a bank transfer is a purchase: that is what the person said it was.
