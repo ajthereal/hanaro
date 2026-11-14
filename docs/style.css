@@ -100,6 +100,7 @@ nav button.on .badge{right:-4px}
 .sugs{display:flex;gap:8px;flex-wrap:wrap;padding:6px 0 2px}.sugs button{border:1px solid #B7DAD6;background:#F4FAF8;border-radius:16px;padding:7px 12px;font-size:13px;color:var(--teal);min-height:36px}
 #heldHint{padding:8px 0}
 .savefab{position:fixed;left:16px;right:16px;bottom:calc(20px + env(safe-area-inset-bottom));max-width:488px;margin:0 auto;z-index:13;box-shadow:0 8px 24px rgba(11,111,122,.3)}
+body:has(input:focus,textarea:focus) .savefab{display:none}
 #addMsg{margin:10px 18px 0}
 #picker{position:fixed;inset:0;z-index:30;background:#F4FAF8;overflow:auto;padding:max(14px,env(safe-area-inset-top)) 16px 40px;max-width:520px;margin:0 auto}
 .pickhead{display:flex;align-items:center;gap:12px;margin-bottom:12px}.pickttl{font-size:20px;font-weight:600}
