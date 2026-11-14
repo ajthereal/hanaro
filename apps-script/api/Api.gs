@@ -13,15 +13,15 @@ var SHEET_ID = 'PASTE_SHEET_ID_HERE';   // set once in the pasted copy, never co
 var ROLES = { aj: 'owner', cynthia: 'partner' };
 var NAMES = { aj: 'AJ', cynthia: 'Cynthia', system: 'Hanaro (auto)' };
 var MAX_FAILS = 10;
-var API_V = 3;            // 2: save without a category, past dates. 3: ids from the phone, batches, edit, delete, transfers, reports
+var API_V = 4;            // 2: save without a category, past dates. 3: ids from the phone, batches, edit, delete, transfers, reports
 var TX_WINDOW = 3000;     // the newest rows of Transactions that every screen reads (about 8+ months)
 var CACHE_SECONDS = 45;
 var DEFER_AUDIT_ = false, AUDIT_BUF_ = [];
 
 /** Actions that change the Sheet. Only these take the lock. */
-var WRITES_ = { set_plan: 1, remove_plan: 1, plan_paid: 1, set_payee_category: 1, attach_photo: 1, add_held_type: 1, update_txn: 1, add_txn: 1, mark_paid: 1, keep_both: 1, merge_dup: 1, set_balance: 1, set_cap: 1, set_debt: 1, void_txn: 1, restore_txn: 1, batch: 1 };
+var WRITES_ = { set_plan: 1, remove_plan: 1, plan_paid: 1, set_payee_category: 1, attach_photo: 1, add_held_type: 1, update_txn: 1, add_txn: 1, mark_paid: 1, keep_both: 1, merge_dup: 1, set_balance: 1, set_cap: 1, set_debt: 1, void_txn: 1, restore_txn: 1, set_limit: 1, batch: 1 };
 /** Actions that may travel together in one batch request. */
-var BATCHABLE_ = { set_plan: 1, remove_plan: 1, plan_paid: 1, set_payee_category: 1, attach_photo: 1, add_held_type: 1, update_txn: 1, add_txn: 1, mark_paid: 1, keep_both: 1, merge_dup: 1, set_balance: 1, set_cap: 1, set_debt: 1, void_txn: 1, restore_txn: 1 };
+var BATCHABLE_ = { set_plan: 1, remove_plan: 1, plan_paid: 1, set_payee_category: 1, attach_photo: 1, add_held_type: 1, update_txn: 1, add_txn: 1, mark_paid: 1, keep_both: 1, merge_dup: 1, set_balance: 1, set_cap: 1, set_debt: 1, void_txn: 1, restore_txn: 1, set_limit: 1 };
 
 function book_() { return SpreadsheetApp.openById(SHEET_ID); }
 
@@ -304,6 +304,54 @@ function removePlan_(book, who, req) {
   return { saved: true };
 }
 
+
+/**
+ * Everything the phone needs to compute its own screens, so it can open instantly from its stored copy.
+ * With `since` (the newest updated_at the phone has) only changed transaction rows come back; the small tabs always come whole.
+ */
+function sync_(book, who, req) {
+  var role = ROLES[who], partner = role === 'partner';
+  var accounts = rows_(book, 'Accounts'), pt = ptAccounts_(accounts);
+  var all = rowsTail_(book, 'Transactions', TX_WINDOW);
+  if (partner) all = all.filter(function (t) { return !pt[t.account]; });
+  var txns = changedSince_(all, req.since), newest = req.since || '';
+  all.forEach(function (t) { if (t.updated_at && String(t.updated_at) > newest) newest = String(t.updated_at); });
+  var cache = CacheService.getScriptCache(), arch = null;
+  try { var c = cacheGetBig_(cache, 'archm'); if (c) arch = JSON.parse(c); } catch (e) {}
+  if (!arch) {
+    arch = book.getSheetByName('Archive_YNAB') ? archiveMonthly_(rows_(book, 'Archive_YNAB')) : [];
+    try { cachePutBig_(cache, 'archm', JSON.stringify(arch), 21600); } catch (e) {}
+  }
+  var summary = {}; rows_(book, 'Summary').forEach(function (r) { summary[r.key] = r.value; });
+  return {
+    apiV: API_V, now: nowIso_(), full: !req.since, newest: newest, user: { name: NAMES[who], role: role },
+    accounts: partner ? accounts.filter(function (x) { return !pt[x.account]; }) : accounts,
+    balances: rows_(book, 'Balances'), txns: txns, cats: rows_(book, 'Categories'), archive: arch,
+    plan: planRows_(book), paid: paidRows_(book), summary: rows_(book, 'Summary'), cutover: summary.cutover_date || ''
+  };
+}
+
+/** Sets or clears a card's credit limit. */
+function setLimit_(book, who, req) {
+  var name = String(req.account || '').trim(), n = Number(req.limit);
+  if (!name) throw userError_('Choose a card.');
+  if (req.limit === '' || req.limit === null || req.limit === undefined) n = 0;
+  else if (isNaN(n) || n < 0) throw userError_('Type the limit as a number, like 10000000.');
+  var sh = book.getSheetByName('Accounts');
+  ensurePlanColumn_(sh, 'credit_limit');
+  var h = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0], col = h.indexOf('account'), lc = h.indexOf('credit_limit');
+  var v = sh.getRange(2, 1, Math.max(1, sh.getLastRow() - 1), h.length).getValues();
+  for (var i = 0; i < v.length; i++) {
+    if (String(v[i][col]).toLowerCase() !== name.toLowerCase()) continue;
+    if (String(v[i][h.indexOf('type')]).toLowerCase() !== 'credit card') throw userError_('Limits are only for credit cards.');
+    var before = v[i][lc];
+    sh.getRange(i + 2, lc + 1).setValue(n > 0 ? n : '');
+    audit_(book, NAMES[who], 'set_limit', 'Accounts', name, 'credit_limit', String(before), n > 0 ? String(n) : '');
+    return { saved: true, account: v[i][col], limit: n > 0 ? n : null };
+  }
+  throw userError_('That card is not in the Accounts tab.');
+}
+
 function accountsFull_(accounts, role) {
   return accounts.filter(function (x) { return x.active !== 'N' && (x.type === 'bank' || x.type === 'credit card') && (role === 'owner' || x.entity !== 'PT'); })
     .map(function (x) { return { account: x.account, type: x.type, entity: x.entity || '', owner: x.owner || '', payNow: Number(x.pay_within_days) > 0 }; });
@@ -339,7 +387,7 @@ function categoryList_(book) {
 }
 
 /** Spending for one month: by category, family and business, with the same month a year of YNAB history behind it. */
-function spendingView_(book, who, req) {
+function spendingAction_(book, who, req) {
   return cached_(who, req, 'spend', function () {
     var d = data_(book, who, req);
     return spendingReport_({ txns: d.txns, accounts: d.accounts, categories: rows_(book, 'Categories'), history: d.history, today: d.today, month: /^\d{4}-\d{2}$/.test(String(req.month || '')) ? req.month : d.today.slice(0, 7), role: ROLES[who] });
@@ -347,7 +395,7 @@ function spendingView_(book, who, req) {
 }
 
 /** Accounts, cards, debts and net worth. */
-function accountsView_(book, who, req) {
+function accountsAction_(book, who, req) {
   return cached_(who, req, 'acct', function () {
     var d = data_(book, who, req);
     return accountsReport_({ accounts: d.accounts, balances: d.balances, debts: d.debts, debtBalances: debtBalanceRows_(book), held: d.heldAll, today: d.today, role: ROLES[who] });
@@ -362,9 +410,11 @@ function dispatch_(book, who, req) {
     return h;
   }
   if (a === 'bootstrap') return bootstrap_(book, who, req);
+  if (a === 'sync') return sync_(book, who, req);
+  if (a === 'set_limit') { if (!owner) throw userError_('Only AJ can change a card limit.'); return setLimit_(book, who, req); }
   if (a === 'plan') return planView_(book, who, req);
-  if (a === 'spending') return spendingView_(book, who, req);
-  if (a === 'accounts') return accountsView_(book, who, req);
+  if (a === 'spending') return spendingAction_(book, who, req);
+  if (a === 'accounts') return accountsAction_(book, who, req);
   if (a === 'set_plan') return setPlan_(book, who, req);
   if (a === 'remove_plan') return removePlan_(book, who, req);
   if (a === 'plan_paid') return markPaid_(book, who, req);
@@ -393,7 +443,11 @@ function dispatch_(book, who, req) {
     if (!owner) throw userError_('Only AJ can change balances.');
     var amt = Number(req.amount);
     if (!req.account || req.amount === '' || req.amount === null || isNaN(amt)) throw userError_('Choose an account and type the balance as a number.');
-    append_(book, 'Balances', [{ date_confirmed: todayFor_(req), account: req.account, confirmed_balance: amt, method: 'manual', entered_by: NAMES[who] }]);
+    var bsh = book.getSheetByName('Balances');
+    ['confirmed_at', 'tracked', 'difference'].forEach(function (c) { ensurePlanColumn_(bsh, c); });
+    var trk = req.tracked === undefined || req.tracked === null || req.tracked === '' ? '' : Number(req.tracked);
+    append_(book, 'Balances', [{ date_confirmed: todayFor_(req), account: req.account, confirmed_balance: amt, method: 'manual', entered_by: NAMES[who],
+      confirmed_at: nowIso_(), tracked: trk, difference: trk === '' || isNaN(trk) ? '' : amt - trk }]);
     audit_(book, NAMES[who], 'set_balance', 'Balances', req.account, 'confirmed_balance', '', amt);
     return { saved: true };
   }

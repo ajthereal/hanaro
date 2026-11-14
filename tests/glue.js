@@ -196,5 +196,23 @@ const before = run("handle_({ action: 'bootstrap', nocache: true }, 'aj')").acti
 run("handle_({ action: 'add_txn', kind: 'purchase', amount: 1500, payee: 'Fresh Shop', category: 'Eating out' }, 'aj')");
 eq('a write clears the cache so the next read shows it', run("handle_({ action: 'bootstrap' }, 'aj')").activity.items.length, before + 1);
 
+// ---------- v4: sync, card limits, confirmed balances ----------
+const sy = run("handle_({ action: 'sync' }, 'aj')");
+eq('sync sends the whole picture the first time', [sy.apiV, sy.full, sy.accounts.length, sy.txns.length > 0, Array.isArray(sy.archive)], [4, true, 4, true, true]);
+const sy2 = run("handle_({ action: 'sync', since: '" + sy.newest + "' }, 'aj')");
+eq('sync with a marker sends only what changed', [sy2.full, sy2.txns.filter((x) => x.updated_at && x.updated_at <= sy.newest).length], [false, 0]);
+eq('Cynthia\'s sync has no company account', run("handle_({ action: 'sync' }, 'cynthia')").accounts.some((x) => x.entity === 'PT'), false);
+let lerr = ''; try { run("handle_({ action: 'set_limit', account: 'Card A', limit: 8000000 }, 'cynthia')"); } catch (e) { lerr = e.userMessage || e.message; }
+eq('only AJ sets a card limit', lerr, 'Only AJ can change a card limit.');
+const lim = run("handle_({ action: 'set_limit', account: 'Card A', limit: 8000000 }, 'aj')");
+eq('limit saved on the card row', [lim.saved, lim.limit], [true, 8000000]);
+const AH = sb.__book.data.Accounts[0], cardRow = sb.__book.data.Accounts.find((r) => r[0] === 'Card A');
+eq('limit column appears when first needed', cardRow[AH.indexOf('credit_limit')], 8000000);
+let lerr2 = ''; try { run("handle_({ action: 'set_limit', account: 'Bank A', limit: 5 }, 'aj')"); } catch (e) { lerr2 = e.userMessage || e.message; }
+eq('limits are refused for a bank account', lerr2, 'Limits are only for credit cards.');
+run("handle_({ action: 'set_balance', account: 'Bank A', amount: 900000, tracked: 850000 }, 'aj')");
+const BH = sb.__book.data.Balances[0], lastB = sb.__book.data.Balances[sb.__book.data.Balances.length - 1];
+eq('confirmed balance keeps the time and the gap from what was tracked', [lastB[BH.indexOf('confirmed_balance')], lastB[BH.indexOf('tracked')], lastB[BH.indexOf('difference')], !!lastB[BH.indexOf('confirmed_at')]], [900000, 850000, 50000, true]);
+
 module.exports = failed;
 if (require.main === module) process.exit(failed ? 1 : 0);

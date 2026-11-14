@@ -300,6 +300,26 @@ function spendReport_(a) {
     biggest: biggest, fromArchive: cur.fromArchive, empty: !groupList.length };
 }
 
+
+/** One total per month, group and category from the flat YNAB archive rows. Transfers between accounts are left out. Spent = outflow - inflow. */
+function archiveMonthly_(rows) {
+  var by = {}, out = [];
+  (rows || []).forEach(function (r) {
+    if (!r.date || String(r.transfer_account || '') !== '') return;
+    var m = String(r.date).slice(0, 7), g = r.category_group || '', c = r.category || '', k = m + '|' + g + '|' + c;
+    var n = num_(r.outflow) - num_(r.inflow);
+    if (!by[k]) { by[k] = { month: m, group: g, category: c, spent: 0, count: 0 }; out.push(by[k]); }
+    by[k].spent += n; by[k].count++;
+  });
+  return out;
+}
+
+/** The oldest rows first, newer than `since` (an updated_at stamp). No `since` returns everything. Rows with no stamp are always sent. */
+function changedSince_(rows, since) {
+  if (!since) return rows;
+  return rows.filter(function (r) { return !r.updated_at || String(r.updated_at) > String(since); });
+}
+
 /* ---------- Home ---------- */
 
 /** Everything Home shows: spent today, this week and this month, bank total, card owed and available, what needs a person. */
@@ -359,5 +379,5 @@ function activityList_(d) {
 
 if (typeof module !== 'undefined') {
   module.exports = { kindOf_: kindOf_, resolveAccount_: resolveAccount_, cardForPayment_: cardForPayment_, effects_: effects_, trackedAll_: trackedAll_, clearing_: clearing_,
-    accountsView_: accountsView_, catIndex_: catIndex_, spendTotalsG_: spendTotalsG_, spendReport_: spendReport_, homeView_: homeView_, slim_: slim_, reviewList_: reviewList_, activityList_: activityList_ };
+    accountsView_: accountsView_, archiveMonthly_: archiveMonthly_, changedSince_: changedSince_, catIndex_: catIndex_, spendTotalsG_: spendTotalsG_, spendReport_: spendReport_, homeView_: homeView_, slim_: slim_, reviewList_: reviewList_, activityList_: activityList_ };
 }
