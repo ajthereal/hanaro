@@ -39,4 +39,12 @@ eq('the server\'s row replaces the phone\'s copy of the same entry', (() => {
   return E.view('activity', today).items.filter((t) => t.id === 't_000000000002').length;
 })(), 1);
 eq('categories are listed in the YNAB order, hidden ones left out', E.categories().map((c) => c.category), ['Groceries', 'Loan']);
+// budget: an older server sends no budget tabs, so the budget is off; a newer one turns it on and a change shows at once
+eq('an older server leaves the budget off', E.budgetOn(), false);
+E.absorb(Object.assign(sync(true, [tx({ id: 't_000000000009' })], '2026-11-14T10:00:00+07:00'), { budgetV: 1, budget: [], moves: [], bset: [], dorder: [], debts: [], debtBal: [], ptIncomes: [{ id: 'pt_1', date: '2026-11-02', amount: 2000000, to: 'Bank A' }] }));
+eq('a newer server turns the budget on', E.budgetOn(), true);
+eq('the phone refuses a bad target with the same words as the server', E.budgetCheck('set_target', { category: 'Groceries', amount: 'x' }, '2026-11-14T12:00:00+07:00'), 'Type the monthly target as a number. Type 0 to remove it.');
+E.localBudget('set_target', { category: 'Groceries', amount: 1500000 }, '2026-11-14T12:00:00+07:00');
+const bv = E.view('budget', today);
+eq('a target set on the phone shows in the budget before it is sent', [bv.ready, bv.planTarget, bv.planFunded, bv.categories[0].name], [true, 1500000, 1500000, 'Groceries']);
 module.exports = failed;

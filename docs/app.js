@@ -122,7 +122,7 @@
   }
 
   /* ---------- data: show the saved copy first, refresh behind it ---------- */
-  var E = window.HanaroEngine, MEMK = { home: 1, review: 1, activity: 1, categories: 1, plan: 1 }, mem = {};
+  var E = window.HanaroEngine, MEMK = { home: 1, review: 1, activity: 1, categories: 1, budget: 1, wealth: 1 }, mem = {};
   function snap(k) { if (MEMK[k]) { if (!mem[k] && E.ready()) mem[k] = { at: Date.now(), d: computeView(k) }; return mem[k] || null; } var raw = LS.get('hanaro.cache.' + k); try { return raw ? JSON.parse(raw) : null; } catch (e) { return null; } }
   function save(k, d) { if (MEMK[k]) { mem[k] = { at: Date.now(), d: d }; return; } LS.set('hanaro.cache.' + k, JSON.stringify({ at: Date.now(), d: d })); }
   function patch(k, fn) { var c = snap(k); if (!c) return; fn(c.d); save(k, c.d); }
@@ -151,6 +151,7 @@
     else if (action === 'attach_photo') E.localUpdate(args.id, { receipt_drive_id: 'pending' }, false);
     else if (action === 'set_balance') E.localBalance(args, today, stamp);
     else if (action === 'set_limit') E.localLimit(args.account, Number(args.limit) || 0);
+    else if (/^(set_target|set_four_walls|move_money|set_debt_order|set_budget_settings|plan_next_month)$/.test(action)) E.localBudget(action, args, stamp);
     else return;
     pushViews();
   }
@@ -160,10 +161,11 @@
     Object.keys(mem).forEach(function (k) { delete mem[k]; });
     var u = E.user(); if (u) setWho(u);
     var hc = snap('home'); if (hc) { state.counts.review = hc.d.reviewCount; renderNav(); }
+    repaintOverlays();
   }
   function computeView(k) {
     var today = localIso().slice(0, 10);
-    return k === 'categories' ? catsPayload() : E.view(k === 'plan' ? 'plan' : k, today);
+    return k === 'categories' ? catsPayload() : E.view(k, today);
   }
   function catsPayload() {
     var accts = E.accountList().map(function (a) { return { account: a.account, type: a.type === 'savings' ? 'bank' : a.type, entity: a.entity || '', owner: a.owner || '', payNow: Number(a.pay_within_days) > 0 }; });
@@ -220,7 +222,7 @@
     return flush().then(function () {
       if (queue.length) { var qe = state.flushErr && !/Cannot reach/.test(state.flushErr); var e = new Error(qe ? 'Some changes are waiting to be sent: ' + state.flushErr : 'Cannot reach Hanaro. Check your internet connection.'); e.net = !qe; throw e; }
       if (!bootP) { var syncT0 = performance.now(); bootP = api('sync', { since: E.since() }).then(function (d) {
-        E.absorb(d); pushViews(); lastSyncAt = Date.now(); state.syncMs = Math.round(performance.now() - syncT0);
+        E.absorb(d); state.synced = true; pushViews(); lastSyncAt = Date.now(); state.syncMs = Math.round(performance.now() - syncT0);
         addPlaces(snap('activity').d.items.map(function (t) { return { lat: t.lat, lng: t.lng, payee: t.payee, category: t.category, account: t.account }; }));
         state.offline = false; state.offlineSaid = false;
         bootP = null; return d;
@@ -341,12 +343,13 @@
   var ICONS = {
     home: '<path d="M4 11l8-7 8 7v9a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"/>',
     review: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.5"/>',
+    budget: '<path d="M4 7h16M4 12h10M4 17h6"/><circle cx="18" cy="16" r="3"/>',
     activity: '<path d="M4 6h16M4 12h16M4 18h10"/>',
     spending: '<path d="M5 20V10M12 20V4M19 20v-7"/>',
     status: '<rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/>',
     accounts: '<rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18M7 15h4"/>'
   };
-  var LABELS = { home: 'HOME', review: 'REVIEW', activity: 'ACTIVITY', spending: 'SPENDING', status: 'STATUS', accounts: 'ACCOUNTS' };
+  var LABELS = { home: 'HOME', budget: 'BUDGET', review: 'REVIEW', activity: 'ACTIVITY', spending: 'SPENDING', status: 'STATUS', accounts: 'ACCOUNT' };
   function renderNav() {
     document.querySelectorAll('nav [data-go]').forEach(function (b) {
       var v = b.getAttribute('data-go'), on = state.view === v || (v === 'accounts' && (state.view === 'payees' || state.view === 'status')) || (v === 'activity' && state.view === 'review');
@@ -385,9 +388,9 @@
   /* Wide screens (iPad landscape, desktop): Today, Spending plan and Review side by side. Same data, same screens. */
   function paintBoard(v) {
     v.innerHTML = '<div class="board"><div id="bc1"></div><div id="bc2"></div><div id="bc3"></div></div>';
-    var h = snap('home'), p = snap('plan'), r = snap('review');
+    var h = snap('home'), p = budgetData(), r = snap('review');
     if (h) paintHome($('bc1'), h.d);
-    if (p) paintSpending($('bc2'), p.d, true);
+    if (p) paintBudget($('bc2'), p.d); else budgetOff($('bc2'));
     if (r) paintReview($('bc3'), r.d);
   }
   var TITLE = 'font-size:30px;font-weight:300;letter-spacing:-.5px;margin:6px 0 0 2px';
@@ -397,12 +400,13 @@
   function paintNow(v, name) {
     var today = localIso().slice(0, 10);
     if (name === 'accounts') return paintAccounts(v, E.view('accounts', today));
-    if (name === 'spending' && state.spendTab !== 'plan') {
+    if (name === 'spending') {
       if (!state.spendMonth) state.spendMonth = today.slice(0, 7);
       return paintReport(v, E.view('spending', today, state.spendMonth));
     }
-    var paint = { board: paintBoard, home: paintHome, review: paintReview, activity: paintActivity, spending: paintSpending }[name];
-    var c = snap(name === 'spending' ? 'plan' : name === 'board' ? 'home' : name);
+    if (name === 'budget') { var bc = budgetData(); if (!bc) return budgetOff(v); return paintBudget(v, bc.d); }
+    var paint = { board: paintBoard, home: paintHome, review: paintReview, activity: paintActivity }[name];
+    var c = snap(name === 'board' ? 'home' : name);
     if (c) paint(v, c.d); else v.innerHTML = skeleton();
   }
   /** Opens at once from the phone's copy. A refresh runs behind it (at most every 20 seconds unless forced) and the screen is repainted only if nothing is being typed. */
@@ -424,14 +428,51 @@
   }
 
   /* ---------- Home ---------- */
+  /** The big number: what can still be spent in the categories for everyday life (Four Walls and everyday), and what the plan is waiting for. */
+  function homeHero(b, h, spentLine) {
+    var html = '<div class="card hero"><div class="label">Left to spend this month</div>';
+    if (!b.ready) {
+      return html + bigHtml(0) + '<p class="note">Give your categories a monthly target in Budget and this shows what is left to spend.</p><button class="primary small" data-go-budget>Open Budget</button>' +
+        '<div class="rule"></div><div class="sub2">Spent today ' + rp(h.spentToday) + ' · ' + spentLine + '</div></div>';
+    }
+    html += bigHtml(b.leftToSpend);
+    if (b.waiting > 0) html += '<div class="waitnote">Waiting for income: ' + rp(b.waiting) + ' of this month\'s plan is not covered yet.</div>';
+    else html += '<div class="okaynote">This month\'s plan is fully covered.</div>';
+    html += '<div class="rule"></div><div class="sub2">Spent today <b>' + rp(h.spentToday) + '</b> · ' + spentLine + '</div></div>';
+    return html;
+  }
+  /** Every budgeted category with what is left in it: pinned ones first, then by group. Overspent rows are red. */
+  function homeCats(b) {
+    var lines = b.categories;
+    if (!lines.length) return '';
+    var pinNames = pins().map(function (p) { return p.indexOf('|') === -1 ? p : p.slice(p.indexOf('|') + 1); });
+    var first = [], rest = [];
+    pinNames.forEach(function (n) { lines.forEach(function (l) { if (l.name === n && first.indexOf(l) === -1) first.push(l); }); });
+    lines.forEach(function (l) { if (first.indexOf(l) === -1) rest.push(l); });
+    function row(l) {
+      return '<button class="hrow" data-hcat="' + esc(l.name) + '"><span class="bl"><span class="p">' + esc(l.name) + '</span>' + (l.target > 0 && l.funded < l.target ? '<span class="s">waiting for ' + rpShort(l.target - l.funded) + '</span>' : '') + '</span><span class="br"><b class="' + (l.left < 0 ? 'neg' : '') + '">' + rp(l.left) + '</b></span>' + leftBar(l) + '</button>';
+    }
+    var html = '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Left in each category</div><button class="link" data-go-budget style="padding:0">Budget ›</button></div>';
+    if (first.length) html += '<div class="glabel">Pinned</div>' + first.map(row).join('');
+    var seen = {}, order = [];
+    rest.forEach(function (l) { var g = l.group || 'Other'; if (!seen[g]) { seen[g] = []; order.push(g); } seen[g].push(l); });
+    order.forEach(function (g) { html += '<div class="glabel">' + esc(g) + '</div>' + seen[g].map(row).join(''); });
+    return html + '</div>';
+  }
+
   function paintHome(v, h) {
     state.counts.review = h.reviewCount; renderNav(); LS.set('hanaro.lastsync', h.lastSync || ''); setPill(h.lastSync); setWho(h.user);
-    var b = bigParts(h.spentToday);
-    var html = '<div style="' + TITLE + '">Today</div>';
-    html += '<div class="card"><div class="label">Spent today</div><div class="big"><span class="rp">Rp</span><span class="n">' + esc(b.n) + '</span><span class="z">' + esc(b.z) + '</span></div>' +
-      '<div style="font-size:14px">' + (h.spentTodayCount ? h.spentTodayCount + ' purchase' + (h.spentTodayCount === 1 ? '' : 's') : 'Nothing spent yet today') + '</div><div class="rule"></div>' +
-      '<div class="two"><div><div class="tiny muted">This week</div><div class="stat">' + rpShort(h.spentWeek) + '</div></div><div class="sep"></div><div><div class="tiny muted">This month</div><div class="stat">' + rpShort(h.spentMonth) + '</div></div></div>' +
-      '<p class="note" style="margin-top:8px">About ' + rp(h.avgPerDay) + ' a day so far this month. Transfers, card payments, debt payments and company accounts are not counted.</p></div>';
+    var b = bigParts(h.spentToday), bc = budgetData();
+    var html = '<div style="' + TITLE + '">' + (bc ? 'Home' : 'Today') + '</div>';
+    var spentLine = (h.spentTodayCount ? h.spentTodayCount + ' purchase' + (h.spentTodayCount === 1 ? '' : 's') : 'Nothing spent yet today');
+    if (bc) {
+      html += homeHero(bc.d, h, spentLine) + homeCats(bc.d);
+    } else {
+      html += '<div class="card"><div class="label">Spent today</div><div class="big"><span class="rp">Rp</span><span class="n">' + esc(b.n) + '</span><span class="z">' + esc(b.z) + '</span></div>' +
+        '<div style="font-size:14px">' + spentLine + '</div><div class="rule"></div>' +
+        '<div class="two"><div><div class="tiny muted">This week</div><div class="stat">' + rpShort(h.spentWeek) + '</div></div><div class="sep"></div><div><div class="tiny muted">This month</div><div class="stat">' + rpShort(h.spentMonth) + '</div></div></div>' +
+        '<p class="note" style="margin-top:8px">About ' + rp(h.avgPerDay) + ' a day so far this month. Transfers, card payments, debt payments and company accounts are not counted.</p></div>';
+    }
     html += '<button class="card tap" data-go-accounts style="text-align:left"><div class="cardhead"><div class="label">Money now</div><span class="chev" aria-hidden="true">›</span></div>' +
       '<div class="kv"><span>In bank accounts</span><b>' + rp(h.cash) + '</b></div>' +
       '<div class="kv"><span>Owed on cards and loans</span><b>' + rp(h.owed) + '</b></div>' +
@@ -449,6 +490,8 @@
     v.innerHTML = html;
     v.querySelectorAll('[data-go-review]').forEach(function (r) { r.addEventListener('click', function () { go('review'); }); });
     v.querySelectorAll('[data-go-accounts]').forEach(function (r) { r.addEventListener('click', function () { go('accounts'); }); });
+    v.querySelectorAll('[data-go-budget]').forEach(function (r) { r.addEventListener('click', function () { go('budget'); }); });
+    v.querySelectorAll('[data-hcat]').forEach(function (r) { r.addEventListener('click', function () { state.actCat = r.getAttribute('data-hcat'); state.actFilter = 'All'; state.actQ = ''; state.actSearchOn = false; go('activity'); }); });
     var pa = v.querySelector('[data-paid-all]');
     if (pa) pa.addEventListener('click', function () {
       var rc = snap('review'), list = rc ? rc.d.items.filter(function (i) { return i.kind === 'pay_now'; }) : [];
@@ -461,118 +504,326 @@
   }
 
 
-  /* ---------- Spending: the plan in three buckets ---------- */
-  function spark(a, b) {
-    var n = Math.max(a.length, b.length), mx = Math.max(1, a[a.length - 1] || 0, b[b.length - 1] || 0);
-    function path(s) { return s.map(function (y, i) { return (i ? 'L' : 'M') + (2 + 92 * i / Math.max(1, n - 1)).toFixed(1) + ' ' + (33 - 29 * y / mx).toFixed(1); }).join(''); }
-    var ex = 2 + 92 * (a.length - 1) / Math.max(1, n - 1), ey = 33 - 29 * (a[a.length - 1] || 0) / mx;
-    return '<svg width="96" height="36" viewBox="0 0 96 36" role="img" aria-label="This month against last month, running total"><path d="' + path(b) + '" fill="none" stroke="#B7DAD6" stroke-width="2" stroke-linecap="round"/><path d="' + path(a) + '" fill="none" stroke="#0B6F7A" stroke-width="2.5" stroke-linecap="round"/><circle cx="' + ex.toFixed(1) + '" cy="' + ey.toFixed(1) + '" r="3.5" fill="#F28DB0"/></svg>';
-  }
+  /* ---------- Budget: the plan, filled by income in a fixed order ---------- */
   var PM = { '01': 'January', '02': 'February', '03': 'March', '04': 'April', '05': 'May', '06': 'June', '07': 'July', '08': 'August', '09': 'September', '10': 'October', '11': 'November', '12': 'December' };
-  function tabsHtml(on) {
-    if ((state.apiV || 1) < 3) return '';
-    return '<div class="seg tabs" role="tablist"><button data-stab="report" role="tab" class="' + (on === 'report' ? 'on' : '') + '">Report</button><button data-stab="plan" role="tab" class="' + (on === 'plan' ? 'on' : '') + '">Plan</button></div>';
-  }
-  function wireTabs(v) {
-    v.querySelectorAll('[data-stab]').forEach(function (b) { b.addEventListener('click', function () { state.spendTab = b.getAttribute('data-stab'); render(); }); });
-  }
-  function paintSpending(v, p, noTabs) {
-    var html = '<div style="' + TITLE + '">Spending</div>' + (noTabs ? '' : tabsHtml('plan'));
-    html += '<div class="card"><div class="label">Planned for ' + PM[p.month.slice(5, 7)] + '</div><div class="big"><span class="rp">Rp</span><span class="n">' + esc(bigParts(p.planned).n) + '</span><span class="z">' + esc(bigParts(p.planned).z) + '</span></div>' +
-      '<p class="note">Fixed bills, money set aside for yearly costs, and one flexible number for everything else.</p></div>';
-    html += '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Fixed</div><span class="note">' + rpShort(p.fixedTotal) + '</span></div>';
-    p.fixed.forEach(function (f, i) {
-      var tag = { paid: '<span class="tag paid">PAID</span>', part: '<span class="tag soon">PART PAID</span>', soon: '<span class="tag soon">IN ' + f.daysTo + ' DAY' + (f.daysTo === 1 ? '' : 'S') + '</span>', late: '<span class="tag late">OVERDUE</span>', later: f.due ? '<span class="tag gray">LATER</span>' : '<span class="tag gray">NOT YET</span>' }[f.status];
-      var ord = function (n) { return n + (n === 1 ? 'st' : n === 2 ? 'nd' : n === 3 ? 'rd' : 'th'); };
-      var sub = f.status === 'paid' ? 'Paid' + (f.paidOn ? ' ' + Number(f.paidOn.slice(8, 10)) + ' ' + PM[f.paidOn.slice(5, 7)] : '') + ' · ' + rp(f.spent)
-        : f.status === 'part' ? rp(f.spent) + ' of ' + rp(f.amount)
-        : (f.dueDay ? 'Due on the ' + ord(f.dueDay) : 'Not paid yet this month');
-      html += '<button class="prow2" data-edit="fixed" data-i="' + i + '"><span class="l"><span class="p">' + esc(f.item) + '</span><span class="s">' + sub + '</span></span><span class="r">' + rp(f.amount) + ' ' + tag + '</span></button>';
-    });
-    if (!p.fixed.length) html += '<p class="note" style="padding:10px 0 0">Rent, school fees, internet and other bills that are the same every month.</p>';
-    html += '<button class="addrow" data-add="fixed">+ Add a fixed bill</button></div>';
-    html += '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Non-monthly</div><span class="note">' + rpShort(p.setAsideTotal) + ' set aside</span></div>';
-    p.nonmonthly.forEach(function (n, i) {
-      html += '<button class="prow2" data-edit="nonmonthly" data-i="' + i + '"><span class="l"><span class="p">' + esc(n.item) + '</span><span class="s">Every ' + n.every + ' month' + (n.every === 1 ? '' : 's') + ', ' + rp(n.target) + '</span></span><span class="r">' + rp(n.setAside) + '<span class="s">a month</span></span></button>';
-    });
-    if (!p.nonmonthly.length) html += '<p class="note" style="padding:10px 0 0">Costs that come once in a while, like car service or annual tax. Hanaro spreads each one over the months so it never surprises you.</p>';
-    html += '<button class="addrow" data-add="nonmonthly">+ Add a yearly or occasional cost</button></div>';
-    var f = p.flexible;
-    if (f) {
-      html += '<button class="card" data-edit="flexible" style="border:0;text-align:left;font:inherit;color:inherit;width:100%"><div class="cardhead"><div class="label">Flexible</div><span class="note">one number</span></div>' +
-        '<div class="big" style="margin-top:4px"><span class="rp" style="font-size:18px">Rp</span><span class="n" style="font-size:36px;color:var(--text)">' + esc(bigParts(f.amount).n) + '</span><span class="z" style="font-size:18px">' + esc(bigParts(f.amount).z) + '</span></div>' +
-        '<div class="pace ' + f.status + '"><div class="f" style="width:' + Math.max(0, Math.min(100, f.amount ? f.spent / f.amount * 100 : 0)).toFixed(1) + '%"></div><div class="tick" style="left:' + (f.dayFrac * 100).toFixed(1) + '%"></div></div>' +
-        '<div class="pacefoot"><span>' + rpShort(f.spent) + ' spent</span><span style="color:' + (f.left >= 0 ? 'var(--good)' : 'var(--warn)') + ';font-weight:700">' + (f.left >= 0 ? rpShort(f.left) + ' left' : rpShort(-f.left) + ' over') + ' · ' + f.daysLeft + ' days</span></div>' +
-        '<p class="note" style="margin-top:4px">Everything that is not a fixed or non-monthly item: groceries, eating out, fuel, fun. No limits per category.</p></button>';
-    } else {
-      html += '<div class="card"><div class="label">Flexible</div><p class="note">One number for groceries, eating out, fuel, fun and everything else that moves.' + (p.suggestFlexible ? ' You spent about ' + rpShort(p.suggestFlexible) + ' a month on this over the last 3 months.' : '') + '</p>' +
-        '<button class="primary small" data-add="flexible"' + (p.suggestFlexible ? ' data-suggest="' + p.suggestFlexible + '"' : '') + '>' + (p.suggestFlexible ? 'Use ' + rpShort(p.suggestFlexible) : 'Set the flexible number') + '</button></div>';
-    }
-    html += '<button class="ghost" data-go-activity>See all transactions</button>';
-    v.innerHTML = html; wireTabs(v);
-    v.querySelectorAll('[data-edit]').forEach(function (b) { b.addEventListener('click', function () {
-      var k = b.getAttribute('data-edit'), i = Number(b.getAttribute('data-i'));
-      openPlan(k, k === 'fixed' ? p.fixed[i] : k === 'nonmonthly' ? p.nonmonthly[i] : p.flexible);
-    }); });
-    v.querySelectorAll('[data-add]').forEach(function (b) { b.addEventListener('click', function () { openPlan(b.getAttribute('data-add'), null, Number(b.getAttribute('data-suggest')) || 0); }); });
-    v.querySelector('[data-go-activity]').addEventListener('click', function () { go('activity'); });
-  }
-  function openPlan(kind, row, suggest) {
-    state.plan = { kind: kind, row: row };
-    var titles = { fixed: 'Fixed bill', nonmonthly: 'Yearly or occasional cost', flexible: 'Flexible number' };
-    $('planTitle').textContent = (row ? 'Change ' : 'Add ') + titles[kind].toLowerCase();
-    $('pfName').hidden = kind === 'flexible'; $('pfDue').hidden = kind !== 'fixed'; $('pfTarget').hidden = kind !== 'nonmonthly'; $('pfEvery').hidden = kind !== 'nonmonthly';
-    $('pfAmount').hidden = kind === 'nonmonthly'; $('pfCat').hidden = kind === 'flexible'; $('pfMatch').hidden = kind !== 'fixed';
-    $('planMatch').value = row && row.match ? row.match : '';
-    $('planPaid').hidden = !(kind === 'fixed' && row && row.status !== 'paid');
-    $('planAmountLabel').textContent = kind === 'flexible' ? 'Amount for the month (Rp)' : 'Amount per month (Rp)';
-    $('planName').value = row ? row.item : ''; $('planName').disabled = !!row;
-    $('planAmount').value = row ? (kind === 'flexible' ? row.amount : row.amount) || '' : (suggest || '');
-    $('planDue').value = row && row.dueDay ? row.dueDay : '';
-    $('planTarget').value = row && row.target ? row.target : ''; $('planEvery').value = row && row.every ? row.every : '';
-    var sel = $('planCat'); sel.innerHTML = '<option value="">None</option>';
-    (state.cats || []).filter(function (c) { return !c.held; }).forEach(function (c) { var o = document.createElement('option'); o.value = c.category; o.textContent = c.category; sel.appendChild(o); });
-    sel.value = row && row.category ? row.category : '';
-    $('planHint').textContent = { fixed: 'Hanaro marks it paid when a purchase has one of the payee words, separated by commas, for example pln. Without payee words it uses the category, but only if no other bill shares it. Money paid some other way: tap Mark as paid.', nonmonthly: 'Hanaro sets aside the target divided by the months. Pick the category so spending on it shows up here.', flexible: 'Fixed and non-monthly categories are left out of this number.' }[kind];
-    $('planMsg').textContent = ''; $('planRemove').hidden = !row || kind === 'flexible';
-    $('planEdit').hidden = false; window.scrollTo(0, 0);
-  }
-  function closePlan() { $('planEdit').hidden = true; }
-  $('planBack').addEventListener('click', closePlan);
   var digits = function (id) { return Number($(id).value.replace(/[^\d]/g, '')); };
-  $('planSave').addEventListener('click', function () {
-    var p = state.plan, k = p.kind, m = $('planMsg'); m.textContent = '';
-    var args = { kind: k, item: p.row ? p.row.item : $('planName').value.trim(), category: $('planCat').value };
-    if (k !== 'flexible' && !args.item) { m.textContent = 'Type a name for this item.'; return; }
-    if (k === 'nonmonthly') {
-      args.target = digits('planTarget'); args.every = digits('planEvery');
-      if (!args.target) { m.textContent = 'Type the target amount as a number.'; return; }
-      if (!args.every) { m.textContent = 'Type how many months it covers, for example 6 or 12.'; return; }
+  function numOf(el) { return Number(String(el.value).replace(/[^\d]/g, '')) || 0; }
+  function fmtEl(el) { var d = el.value.replace(/[^\d]/g, ''); el.value = d ? Number(d).toLocaleString('id-ID') : ''; }
+  function monthWord(ym) { return PM[ym.slice(5, 7)]; }
+  function bigHtml(n, cls) { var b = bigParts(n); return '<div class="big"><span class="rp">Rp</span><span class="n' + (cls ? ' ' + cls : '') + '">' + esc(b.n) + '</span><span class="z">' + esc(b.z) + '</span></div>'; }
+  function budgetData() { return E.budgetOn() ? snap('budget') : null; }
+  function budgetWord() { return 'Budget needs the new server code. Paste Code.gs into Apps Script to turn it on.'; }
+  /** The one plain line shown when the server is the older version. */
+  function budgetOff(v) {
+    if (!state.synced && state.busy) { v.innerHTML = skeleton(); return; }
+    v.innerHTML = '<div style="' + TITLE + '">Budget</div><div class="card"><div class="label">Budget is not on yet</div><p class="note" id="budOff">' + budgetWord() + '</p></div>';
+  }
+  /** Sends one budget change after checking it the same way the server will. Returns false (and says why) when it is not valid. */
+  function budgetSend(action, args, label, say) {
+    var err = E.budgetCheck(action, args, localIso());
+    if (err) { if (say) say(err); else banner(err, true); return false; }
+    send(action, args, label).then(afterWrite);
+    return true;
+  }
+  function leftBar(l) {
+    var avail = l.carryIn + l.funded + l.moved, pct = avail > 0 ? Math.max(0, Math.min(100, Math.round(l.left / avail * 100))) : 0;
+    var cls = l.left < 0 ? ' max' : (avail > 0 && l.left / avail < 0.15 ? ' hi' : '');
+    return '<span class="meter thin' + cls + '"><span style="width:' + (l.left < 0 ? 100 : pct) + '%"></span></span>';
+  }
+  function catRow(l) {
+    var sub = [];
+    if (l.target > 0) sub.push('Target ' + rpShort(l.target)); else sub.push('No target');
+    if (l.step === 2 && l.due) sub.push('due ' + dueWord(l.due));
+    if (l.target > 0 && l.funded < l.target) sub.push('needs ' + rpShort(l.target - l.funded));
+    return '<button class="brow" data-bcat="' + esc(l.name) + '"><span class="bl"><span class="p">' + esc(l.name) + '</span><span class="s">' + esc(sub.join(' · ')) + '</span></span>' +
+      '<span class="br"><b class="' + (l.left < 0 ? 'neg' : '') + '">' + rp(l.left) + '</b><span class="s">left</span></span>' + leftBar(l) + '</button>';
+  }
+  var STEP_HELP = {
+    1: 'The basics that keep the household running: food at home, utilities, housing and transport. Funded first.',
+    2: 'Bills with a due date (earliest first) and the minimum payment on every debt.',
+    3: 'Overspending from earlier months, paid back before everyday spending.',
+    4: 'Every other category with a target, including money set aside for yearly costs.',
+    5: 'The buffer account is topped up to the starter emergency fund.'
+  };
+  function stepCard(n, b, owner) {
+    var s = b.steps[n], title = n === 6 ? (b.allClear ? 'Full emergency fund and wealth' : 'Debt snowball') : s.name;
+    var right = n <= 4 ? rpShort(s.funded) + ' of ' + rpShort(s.target) : (s.funded ? rpShort(s.funded) + ' this month' : '');
+    var html = '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Step ' + n + ' · ' + esc(title) + '</div><span class="note">' + right + '</span></div>';
+    if (n <= 5) html += '<p class="stephelp">' + STEP_HELP[n] + '</p>';
+    if (n === 6) html += '<p class="stephelp">' + (b.allClear ? 'No debt is left. Money goes to the full emergency fund (3 to 6 months of costs), then to wealth.' : 'Everything left goes to one debt at a time: the ones you pinned first, then the smallest balance. A paid off debt frees its minimum for the next one.') + '</p>';
+    if (n === 6 && !b.allClear) {
+      html += debtRows(b, owner);
     } else {
-      args.amount = digits('planAmount');
-      if (!args.amount) { m.textContent = 'Type the amount as a number.'; return; }
-      if (k === 'fixed') { args.match = $('planMatch').value.trim(); var dd = digits('planDue'); args.dueDay = $('planDue').value.trim() === '' ? '' : dd; if (args.dueDay !== '' && (dd < 1 || dd > 31)) { m.textContent = 'The due day must be from 1 to 31.'; return; } }
+      s.lines.forEach(function (l) {
+        if (l.kind === 'cat') html += catRow(l);
+        else if (l.kind === 'min') html += '<div class="brow" style="cursor:default"><span class="bl"><span class="p">' + esc(l.name) + ' <span class="tag gray">MINIMUM</span></span><span class="s">' + (l.due ? 'due ' + dueWord(l.due) + ' · ' : '') + 'Rp ' + Math.round(l.target).toLocaleString('id-ID') + (l.paid ? ' · paid ' + rpShort(l.paid) : '') + '</span></span><span class="br"><b>' + rpShort(l.funded) + '</b><span class="s">of ' + rpShort(l.target) + '</span></span></div>';
+        else if (l.kind === 'over') html += '<div class="brow" style="cursor:default"><span class="bl"><span class="p">Overspent on cards or cash</span><span class="s">Carried from earlier months</span></span><span class="br"><b>' + rpShort(l.funded) + '</b><span class="s">of ' + rpShort(l.target) + '</span></span></div>';
+        else if (l.kind === 'emg') html += '<div class="brow" style="cursor:default"><span class="bl"><span class="p">Emergency fund</span><span class="s">Held ' + rpShort(l.balance) + ' of ' + rpShort(l.goal) + '</span></span><span class="br"><b>' + rpShort(l.funded) + '</b><span class="s">of ' + rpShort(l.target) + ' needed</span></span></div>';
+        else if (l.kind === 'full') html += '<div class="brow" style="cursor:default"><span class="bl"><span class="p">Full emergency fund</span><span class="s">Held ' + rpShort(l.balance) + ' of ' + rpShort(l.goal) + '</span></span><span class="br"><b>' + rpShort(l.funded) + '</b></span></div>';
+        else if (l.kind === 'wealth') html += '<div class="brow" style="cursor:default"><span class="bl"><span class="p">Wealth</span><span class="s">Move it to the company account or invest it</span></span><span class="br"><b>' + rpShort(l.funded) + '</b></span></div>';
+      });
     }
-    closePlan(); banner('Saved');
-    send('set_plan', args, 'the plan for ' + (args.item || 'Flexible')).then(afterWrite);
-  });
-  $('planPaid').addEventListener('click', function () {
-    var p = state.plan; if (!p.row) return;
-    var left = Math.max(0, p.row.amount - (p.row.spent || 0));
-    dialog({ title: 'How much was paid for ' + p.row.item + '?', input: { value: Number(left || p.row.amount).toLocaleString('id-ID'), numeric: true, placeholder: 'Rp' }, actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, fn: function (val, say) {
-      var amt = Number(String(val).replace(/[^\d]/g, ''));
-      if (!amt) { say('Type the amount that was paid as a number.'); return false; }
-      closePlan(); banner('Saved');
-      send('plan_paid', { item: p.row.item, amount: amt }, 'marking ' + p.row.item + ' as paid').then(afterWrite);
-    } }] });
-  });
-  $('planRemove').addEventListener('click', function () {
-    var p = state.plan; if (!p.row) return;
-    confirmBox('Remove ' + p.row.item + ' from the plan?', 'Remove', function () {
-      closePlan(); banner('Removed');
-      send('remove_plan', { item: p.row.item, kind: p.kind }, 'removing ' + p.row.item).then(afterWrite);
-    }, true);
-  });
+    if (n === 1 && !s.lines.length) html += '<p class="note" style="padding:8px 0 0">No Four Walls yet. Open a category and switch on Four Walls, or do it in Budget settings.</p>';
+    if (n === 2 && !s.lines.length) html += '<p class="note" style="padding:8px 0 0">No bills yet. Give a category a due day to make it a bill.</p>';
+    if (n === 3 && !s.lines.length) html += '<p class="note" style="padding:8px 0 0">Nothing carried over. Overspending in a category shows up here next month.</p>';
+    if (n === 4) {
+      if (!s.lines.length) html += '<p class="note" style="padding:8px 0 0">No everyday categories yet.</p>';
+      html += '<button class="addrow" data-add-target>+ Add a category target</button>';
+    }
+    if (n === 5 && !s.lines.length) html += '<p class="note" style="padding:8px 0 0">No starter emergency fund set.' + (owner ? ' <button class="link" data-open-settings>Set it in Budget settings</button>' : '') + '</p>';
+    return html + '</div>';
+  }
+  function debtRows(b, owner) {
+    var byName = {}; b.steps[6].lines.forEach(function (l) { if (l.kind === 'debt') byName[l.name] = l; });
+    var active = b.debts.filter(function (x) { return x.balance !== 0; }), html = '';
+    if (!b.debts.length) return '<p class="note" style="padding:8px 0 0">No debts yet. Cards and loans show here once they have a balance in Account.</p>';
+    active.forEach(function (x, i) {
+      var l = byName[x.name], focus = !!(l && l.focus);
+      html += '<div class="drow' + (focus ? ' focus' : '') + '"><span><span class="p">' + esc(x.name) + (focus ? ' <span class="tag focus">FOCUS</span>' : '') + '</span><span class="s">' +
+        (x.balance === null ? 'No balance yet. Set it in Account.' : 'Balance ' + rpShort(x.balance) + (x.minimum ? ' · minimum ' + rpShort(x.minimum) : '')) + '</span></span>' +
+        '<span class="r">' + (l && l.funded ? '+' + rpShort(l.funded) : '<span class="muted">Rp 0</span>') + '</span>' +
+        (owner && x.balance !== null ? '<span class="arrs"><button class="arr" data-dmove="-1" data-di="' + i + '" aria-label="Move ' + esc(x.name) + ' up"' + (i === 0 ? ' disabled' : '') + '>↑</button><button class="arr" data-dmove="1" data-di="' + i + '" aria-label="Move ' + esc(x.name) + ' down"' + (i === active.length - 1 ? ' disabled' : '') + '>↓</button></span>' : '<span></span>') + '</div>';
+    });
+    var paid = b.debts.filter(function (x) { return x.balance === 0; });
+    paid.forEach(function (x) { html += '<div class="drow"><span><span class="p">' + esc(x.name) + '</span><span class="s">Paid off</span></span><span class="r"><span class="tag paid">PAID OFF</span></span><span></span></div>'; });
+    if (owner && b.pinned && b.pinned.length) html += '<button class="addrow" data-dreset>Back to smallest balance first</button>';
+    return html;
+  }
+  function incomeCard(b) {
+    var html = '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Income in ' + monthWord(b.month) + '</div><span class="note">' + rpShort(b.incomes.reduce(function (s, i) { return s + i.amount; }, 0)) + '</span></div>';
+    if (!b.incomes.length) html += '<p class="note" style="padding:8px 0 0">No income yet this month. Money moved from a company account to a personal account shows up here and fills the plan straight away.</p>';
+    b.incomes.forEach(function (i) {
+      html += '<div class="irow"><div class="top"><span><span class="p" style="font-weight:600;font-size:14.5px">' + dayLabel(i.date) + '</span> <span class="sub">' + (i.source === 'transfer' ? (i.from === 'Company account' ? 'Company account' : esc(i.from)) + ' to ' + esc(i.to) : esc(i.from || 'Income') + ' into ' + esc(i.to)) + '</span></span><b>' + rp(i.amount) + '</b></div><div class="chiprow">';
+      i.parts.forEach(function (p) { html += '<span class="cpill' + (p.next ? ' blue' : '') + '">' + (p.next ? 'Next month · ' : '') + esc(p.name) + ' · ' + rpShort(p.amount) + '</span>'; });
+      if (i.unallocated) html += '<span class="cpill none">Not placed · ' + rpShort(i.unallocated) + '</span>';
+      if (!i.parts.length && !i.unallocated) html += '<span class="cpill">Waiting for a target</span>';
+      html += '</div>' + (i.fundsMonth !== b.month ? '<div class="sub" style="margin-top:6px">Funds ' + monthWord(i.fundsMonth) + ' (last month pays this month is on)</div>' : '') + '</div>';
+    });
+    return html + '</div>';
+  }
+  function paintBudget(v, b) {
+    var owner = state.role === 'owner', html = '<div style="' + TITLE + '">Budget</div>';
+    if (!b.ready) {
+      html += '<div class="card"><div class="label">Set up your budget</div><p class="note">Give each category a monthly target. Money that moves from a company account to a personal account fills them in order: Four Walls first, then bills, everyday spending, the emergency fund and your debts.</p>' +
+        (owner ? '<button class="primary small" data-plan-next>Set my targets</button>' : '<button class="primary small" data-add-target>Add a target</button>') + '</div>';
+      html += incomeCard(b);
+      v.innerHTML = html; wireBudget(v, b); return;
+    }
+    var pct = b.planTarget ? Math.min(100, Math.round(b.planFunded / b.planTarget * 100)) : 0, nc = b.nextCovered;
+    html += '<div class="card"><div class="label">This month\'s plan · ' + monthWord(b.month) + '</div>' + bigHtml(b.planFunded) +
+      '<div class="note">funded of Rp ' + Math.round(b.planTarget).toLocaleString('id-ID') + ' planned</div><span class="meter"><span style="width:' + pct + '%"></span></span>' +
+      '<div style="font-size:14px;font-weight:600;margin-top:4px">' + esc(b.stage.text) + '</div><div class="rule"></div>' +
+      '<div class="kv" style="padding:0"><span>Next month covered</span><b>' + (nc.pct === null ? 'No targets yet' : nc.pct + '%') + '</b></div>' +
+      (nc.pct !== null ? '<span class="meter' + (nc.full ? '' : '') + '"><span style="width:' + nc.pct + '%"></span></span>' : '') +
+      '<p class="note">' + (b.settings.last_month ? 'Last month\'s income pays this month. This month\'s income funds ' + monthWord(b.nextMonth) + '.' : 'Once this month is covered, extra income fills ' + monthWord(b.nextMonth) + ' before the emergency fund and your debts.') + '</p></div>';
+    if (owner && nc.full && !b.settings.last_month) {
+      html += '<div class="card"><div class="label">Next month is fully covered</div><p class="note">You can now live on last month\'s income. Turn this on and every income will fund the month after it.</p><button class="primary small" data-last-on>Use last month\'s income for this month</button></div>';
+    }
+    html += incomeCard(b);
+    [1, 2, 3, 4, 5, 6].forEach(function (n) { html += stepCard(n, b, owner); });
+    if (b.unbudgeted > 0) html += '<p class="note" style="margin:0 4px">' + rp(b.unbudgeted) + ' was spent in categories with no target this month.</p>';
+    if (owner) {
+      html += '<button class="primary" data-plan-next>' + (b.reviewedNext ? 'Change the plan for ' + monthWord(b.nextMonth) : 'Plan ' + monthWord(b.nextMonth)) + '</button>';
+      html += '<button class="ghost" data-open-settings>Budget settings</button>';
+    }
+    v.innerHTML = html; wireBudget(v, b);
+  }
+  function wireBudget(v, b) {
+    v.querySelectorAll('[data-bcat]').forEach(function (x) { x.addEventListener('click', function () { openCat(x.getAttribute('data-bcat')); }); });
+    v.querySelectorAll('[data-plan-next]').forEach(function (x) { x.addEventListener('click', openPlanNext); });
+    v.querySelectorAll('[data-open-settings]').forEach(function (x) { x.addEventListener('click', openSettings); });
+    v.querySelectorAll('[data-add-target]').forEach(function (x) { x.addEventListener('click', function () { pickCategory('Add a category target', function (name) { openCat(name); }); }); });
+    v.querySelectorAll('[data-dmove]').forEach(function (x) { x.addEventListener('click', function () {
+      var active = b.debts.filter(function (d) { return d.balance !== 0; }).map(function (d) { return d.name; }), i = Number(x.getAttribute('data-di')), j = i + Number(x.getAttribute('data-dmove'));
+      if (j < 0 || j >= active.length) return;
+      var t = active[i]; active[i] = active[j]; active[j] = t;
+      budgetSend('set_debt_order', { order: active }, 'the order of your debts'); paintCurrent();
+    }); });
+    var rs = v.querySelector('[data-dreset]'); if (rs) rs.addEventListener('click', function () { budgetSend('set_debt_order', { order: [] }, 'the order of your debts'); paintCurrent(); });
+    var lo = v.querySelector('[data-last-on]'); if (lo) lo.addEventListener('click', function () { budgetSend('set_budget_settings', { lastMonth: true }, 'the last month setting'); banner('Saved'); paintCurrent(); });
+  }
+  /** A category chosen from the list of everyday categories. */
+  function pickCategory(title, onPick) {
+    ensureCats().then(function () {
+      openPicker({ held: false, selected: '', title: title, noNew: true, onPick: function (name) { onPick(name); } });
+    });
+  }
+
+  /* ----- one category: Left, target, Four Walls, move money, what was spent ----- */
+  var cs = { name: '' };
+  function lineFor(b, name) {
+    var hit = b.categories.filter(function (l) { return l.name === name; })[0];
+    return hit || { name: name, step: 4, target: 0, funded: 0, carryIn: 0, moved: 0, spent: 0, left: 0, dueDay: null, weekend: '', walls: !!(b.walls && b.walls[name]) };
+  }
+  function openCat(name) { cs.name = name; paintCat(true); $('catSheet').hidden = false; $('catSheet').scrollTop = 0; }
+  function closeCat() { $('catSheet').hidden = true; }
+  function paintCat(fresh) {
+    var bc = budgetData(); if (!bc) return;
+    var b = bc.d, l = lineFor(b, cs.name), owner = state.role === 'owner', body = $('catSheetBody');
+    $('catSheetTitle').textContent = cs.name;
+    var keepT = !fresh && $('csTarget') ? $('csTarget').value : null, keepD = !fresh && $('csDue') ? $('csDue').value : null, keepW = !fresh && $('csWeekend') ? $('csWeekend').value : null;
+    var html = '<div class="te-amt" style="' + (l.left < 0 ? 'color:var(--warn)' : '') + '">' + rp(l.left) + '</div><div class="te-sub">Left in ' + monthWord(b.month) + (l.step === 1 ? ' · Four Walls' : l.step === 2 ? ' · bill' : '') + '</div>';
+    html += '<div class="card"><div class="kv"><span>Carried in from last month</span><b>' + rp(l.carryIn) + '</b></div><div class="kv"><span>Funded this month' + (l.target ? ' (target ' + rpShort(l.target) + ')' : '') + '</span><b>' + rp(l.funded) + '</b></div>' +
+      '<div class="kv"><span>Moved in or out</span><b>' + signed(l.moved) + '</b></div><div class="kv"><span>Spent</span><b>' + rp(l.spent) + '</b></div>' +
+      (l.legacy ? '<p class="note">This target came from your old Plan. Save it here to make it a budget target.</p>' : '') + '</div>';
+    html += '<div class="fields"><div class="field"><label for="csTarget">Monthly target (Rp)</label><input id="csTarget" inputmode="numeric" autocomplete="off" placeholder="0" value="' + (keepT !== null ? esc(keepT) : (l.target ? Number(l.target).toLocaleString('id-ID') : '')) + '"></div>' +
+      '<div class="field"><label for="csDue">Due day of the month (optional, makes it a bill)</label><input id="csDue" inputmode="numeric" autocomplete="off" placeholder="For example, 1" value="' + (keepD !== null ? esc(keepD) : (l.dueDay ? l.dueDay : '')) + '"></div>' +
+      '<div class="field"><label for="csWeekend">If the due day is a weekend</label><select id="csWeekend"><option value="">Leave the date</option><option value="before">Pay on the Friday before</option><option value="after">Pay on the Monday after</option></select></div>' +
+      '<div class="field"><label class="chk"><input type="checkbox" id="csWalls"' + (l.walls ? ' checked' : '') + '> Four Walls (essential, funded first)</label></div></div>';
+    html += '<p id="csMsg" class="err" role="alert"></p><button id="csSave" class="primary">Save target</button><button id="csMove" class="ghost" style="margin-top:10px">Move money</button>' +
+      (l.target > 0 ? '<button id="csRemove" class="ghost dangerbtn" style="margin-top:10px">Remove the target</button>' : '');
+    var tx = recentTxns().filter(function (t) { return t.category === cs.name && String(t.date).slice(0, 7) === b.month; }).sort(function (x, y) { return String(y.timestamp).localeCompare(String(x.timestamp)); });
+    html += '<div class="card" style="gap:0;margin-top:16px"><div class="cardhead"><div class="label">Spent in ' + monthWord(b.month) + '</div><span class="note">' + tx.length + ' entr' + (tx.length === 1 ? 'y' : 'ies') + '</span></div>';
+    if (!tx.length) html += '<p class="note" style="padding-top:8px">Nothing spent here this month.</p>';
+    tx.slice(0, 30).forEach(function (t) { html += '<button class="txr" data-tx="' + esc(t.id) + '"><span><b style="font-weight:600;font-size:14.5px">' + esc(t.payee || '(no name)') + '</b><span class="s">' + dayLabel(t.date) + ' · ' + esc(t.account || 'No account') + '</span></span><span style="white-space:nowrap">' + rp(t.amount || 0) + '</span></button>'; });
+    html += '<button class="addrow" data-allact>See all in Activity</button></div>';
+    body.innerHTML = html;
+    $('csWeekend').value = keepW !== null ? keepW : (l.weekend || '');
+    $('csTarget').addEventListener('input', function () { fmtEl($('csTarget')); });
+    $('csSave').addEventListener('click', function () {
+      var args = { category: cs.name, amount: numOf($('csTarget')), dueDay: $('csDue').value.trim() === '' ? '' : digits('csDue'), weekend: $('csDue').value.trim() === '' ? '' : $('csWeekend').value };
+      if (!budgetSend('set_target', args, 'the target for ' + cs.name, function (m) { $('csMsg').textContent = m; })) return;
+      banner('Saved'); paintCat(true); paintCurrent();
+    });
+    $('csWalls').addEventListener('change', function () { budgetSend('set_four_walls', { category: cs.name, on: $('csWalls').checked }, 'Four Walls for ' + cs.name); banner('Saved'); paintCat(); paintCurrent(); });
+    $('csMove').addEventListener('click', function () { openMove(cs.name); });
+    var rm = $('csRemove'); if (rm) rm.addEventListener('click', function () {
+      confirmBox('Remove the target for ' + cs.name + '? What is left in it stays there.', 'Remove', function () { budgetSend('set_target', { category: cs.name, amount: 0 }, 'removing the target for ' + cs.name); banner('Removed'); paintCat(true); paintCurrent(); }, true);
+    });
+    body.querySelectorAll('[data-tx]').forEach(function (x) { x.addEventListener('click', function () { openTxnEdit(x.getAttribute('data-tx')); }); });
+    body.querySelector('[data-allact]').addEventListener('click', function () { closeCat(); state.actCat = cs.name; state.actFilter = 'All'; state.actQ = ''; state.actSearchOn = false; go('activity'); });
+  }
+  $('csBack').addEventListener('click', closeCat);
+
+  /* ----- move money between categories ----- */
+  var mv = { from: '', to: '' };
+  function openMove(from) { mv = { from: from || '', to: '' }; paintMove(); $('moveSheet').hidden = false; $('moveSheet').scrollTop = 0; }
+  function paintMove() {
+    var bc = budgetData(); if (!bc) return;
+    var b = bc.d, fl = mv.from ? lineFor(b, mv.from) : null, keepA = $('mvAmount') ? $('mvAmount').value : '', keepM = $('mvMemo') ? $('mvMemo').value : '';
+    $('moveSheetBody').innerHTML = '<div class="fields"><button id="mvFrom" class="field fbtn" type="button"><span class="fl">From</span><span class="fv' + (mv.from ? '' : ' empty') + '">' + esc(mv.from || 'Choose') + '</span><span class="chev" aria-hidden="true">›</span></button>' +
+      '<button id="mvTo" class="field fbtn" type="button"><span class="fl">To</span><span class="fv' + (mv.to ? '' : ' empty') + '">' + esc(mv.to || 'Choose') + '</span><span class="chev" aria-hidden="true">›</span></button>' +
+      '<div class="field"><label for="mvAmount">Amount (Rp)</label><input id="mvAmount" inputmode="numeric" autocomplete="off" placeholder="0" value="' + esc(keepA) + '"></div>' +
+      '<div class="field"><label for="mvMemo">Memo (optional)</label><input id="mvMemo" autocomplete="off" value="' + esc(keepM) + '"></div></div>' +
+      (fl ? '<p class="note" style="margin:10px 4px 0">' + esc(mv.from) + ' has ' + rp(fl.left) + ' left.</p>' : '') +
+      '<p id="mvMsg" class="err" role="alert"></p><button id="mvSave" class="primary">Move the money</button><p class="note" style="margin:10px 4px 0">Nothing is deleted. The move is kept as its own line in your history.</p>';
+    function chooseCat(which) { pickCategory(which === 'from' ? 'Move from' : 'Move to', function (name) { mv[which] = name; paintMove(); }); }
+    $('mvFrom').addEventListener('click', function () { chooseCat('from'); });
+    $('mvTo').addEventListener('click', function () { chooseCat('to'); });
+    $('mvAmount').addEventListener('input', function () { fmtEl($('mvAmount')); });
+    $('mvSave').addEventListener('click', function () {
+      var args = { id: 'mv_' + newId().slice(2) + Math.random().toString(16).slice(2, 6), from: mv.from, to: mv.to, amount: numOf($('mvAmount')), memo: $('mvMemo').value.trim(), date: localIso().slice(0, 10) };
+      if (!budgetSend('move_money', args, 'moving money from ' + mv.from + ' to ' + mv.to, function (m) { $('mvMsg').textContent = m; })) return;
+      $('moveSheet').hidden = true; banner('Moved ' + rp(args.amount)); paintCat(); paintCurrent();
+    });
+  }
+  $('mvBack').addEventListener('click', function () { $('moveSheet').hidden = true; });
+
+  /* ----- Plan next month: the monthly review ----- */
+  var pn = { rows: [], view: null };
+  function openPlanNext() {
+    var v = E.view('planNext', localIso().slice(0, 10));
+    pn.view = v;
+    pn.rows = v.rows.map(function (r) {
+      var start = r.nextTarget || r.lastTarget || 0;
+      return { category: r.category, group: r.group, lastTarget: r.lastTarget, spent: r.spent, suggested: r.suggested, budgeted: r.budgeted, value: r.budgeted ? start : 0, orig: r.nextTarget || 0, dueDay: r.dueDay, weekend: r.weekend, walls: r.walls, wallsOrig: r.walls };
+    });
+    paintPlanNext(); $('planNext').hidden = false; $('planNext').scrollTop = 0;
+  }
+  function pnTotal() { return pn.rows.reduce(function (s, r) { return s + (r.value || 0); }, 0); }
+  function pnRow(r, i) {
+    return '<div class="planrow" data-pi="' + i + '"><div class="nm"><span class="p">' + esc(r.category) + '</span><span class="sub">' + esc(r.group) + '</span></div>' +
+      '<div class="hist">' + monthWord(pn.view.month) + ': target ' + (r.lastTarget ? rpShort(r.lastTarget) : 'none') + ' · spent ' + rpShort(r.spent) + (r.dueDay ? ' · due on the ' + r.dueDay + '.' : '') + '</div>' +
+      '<div class="inl"><input data-pv="' + i + '" inputmode="numeric" autocomplete="off" placeholder="0" aria-label="Target for ' + esc(r.category) + '" value="' + (r.value ? Number(r.value).toLocaleString('id-ID') : '') + '">' +
+      (r.suggested ? '<button class="sugbtn" data-ps="' + i + '" type="button">Use ' + rpShort(r.suggested) + '</button>' : '') + '</div>' +
+      '<label class="chk"><input type="checkbox" data-pw="' + i + '"' + (r.walls ? ' checked' : '') + '> Four Walls</label></div>';
+  }
+  function paintPlanNext() {
+    var nm = monthWord(pn.view.nextMonth), budgeted = pn.rows.map(function (r, i) { return { r: r, i: i }; });
+    var yes = budgeted.filter(function (x) { return x.r.budgeted; }), no = budgeted.filter(function (x) { return !x.r.budgeted; });
+    $('planNextTitle').textContent = 'Plan ' + nm;
+    var html = '<div class="card"><div class="sumbar"><div class="label">Planned for ' + nm + '</div><span class="note">3 month average is the suggestion</span></div>' + '<div class="big" style="margin-top:2px"><span class="rp">Rp</span><span class="n" id="pnTotal" style="font-size:40px">' + Math.round(pnTotal()).toLocaleString('id-ID') + '</span></div>' +
+      '<p class="note">' + (pn.view.reviewed ? nm + ' was already planned. Saving again replaces those targets. ' : '') + 'Change any number, then Save. A target of 0 removes the category from the plan.</p></div>';
+    html += '<div class="card" style="gap:0"><div class="cardhead"><div class="label">In your plan</div></div>' + (yes.length ? yes.map(function (x) { return pnRow(x.r, x.i); }).join('') : '<p class="note" style="padding-top:8px">No targets yet. Use the suggestions below to start.</p>') + '</div>';
+    if (no.length) html += '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Spent on recently, no target</div></div>' + no.map(function (x) { return pnRow(x.r, x.i); }).join('') + '</div>';
+    html += '<button class="ghost" id="pnAdd" type="button">+ Add another category</button><p id="pnMsg" class="err" role="alert"></p><button id="pnSave" class="primary stick">Save the plan for ' + nm + '</button>';
+    $('planNextBody').innerHTML = html;
+    var root = $('planNextBody');
+    root.querySelectorAll('[data-pv]').forEach(function (inp) { inp.addEventListener('input', function () { fmtEl(inp); pn.rows[Number(inp.getAttribute('data-pv'))].value = numOf(inp); $('pnTotal').textContent = Math.round(pnTotal()).toLocaleString('id-ID'); }); });
+    root.querySelectorAll('[data-ps]').forEach(function (b) { b.addEventListener('click', function () { var i = Number(b.getAttribute('data-ps')); pn.rows[i].value = pn.rows[i].suggested; paintPlanNext(); }); });
+    root.querySelectorAll('[data-pw]').forEach(function (c) { c.addEventListener('change', function () { pn.rows[Number(c.getAttribute('data-pw'))].walls = c.checked; }); });
+    $('pnAdd').addEventListener('click', function () {
+      pickCategory('Add a category', function (name) {
+        var ex = pn.rows.filter(function (r) { return r.category === name; })[0];
+        if (!ex) pn.rows.push({ category: name, group: groupFor(name) || '', lastTarget: 0, spent: 0, suggested: 0, budgeted: true, value: 0, orig: 0, dueDay: null, weekend: '', walls: false, wallsOrig: false });
+        else ex.budgeted = true;
+        paintPlanNext();
+      });
+    });
+    $('pnSave').addEventListener('click', function () {
+      var items = [];
+      pn.rows.forEach(function (r) {
+        if (!r.value && !r.orig && !r.budgeted) return;
+        if (!r.value && !r.orig && !r.lastTarget) return;
+        var it = { category: r.category, amount: r.value || 0, dueDay: r.dueDay === null || r.dueDay === undefined ? '' : r.dueDay, weekend: r.weekend || '' };
+        if (r.walls !== r.wallsOrig) it.walls = r.walls;
+        items.push(it);
+      });
+      if (!budgetSend('plan_next_month', { items: items }, 'the plan for ' + nm, function (m) { $('pnMsg').textContent = m; })) return;
+      $('planNext').hidden = true; banner('Saved the plan for ' + nm); paintCurrent();
+    });
+  }
+  $('pnBack').addEventListener('click', function () { $('planNext').hidden = true; });
+
+  /* ----- budget settings ----- */
+  function openSettings() { paintSettings(); $('budSettings').hidden = false; $('budSettings').scrollTop = 0; }
+  function paintSettings() {
+    var bc = budgetData(); if (!bc) return;
+    var b = bc.d, st = b.settings, root = $('budSettingsBody');
+    var html = '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Emergency fund</div></div>' +
+      '<button class="prow2" data-set="starter"><span class="l"><span class="p">Starter fund target</span><span class="s">Step 5. Topped up before any debt is paid.</span></span><span class="r">' + (st.starter_target ? rp(st.starter_target) : '<span class="muted">Not set</span>') + '</span></button>' +
+      '<button class="prow2" data-set="full"><span class="l"><span class="p">Full emergency fund</span><span class="s">3 to 6 months of costs. Built once your debts are gone.</span></span><span class="r">' + (st.full_target ? rp(st.full_target) : '<span class="muted">Not set</span>') + '</span></button>' +
+      '<button class="prow2" data-set="buffer"><span class="l"><span class="p">Buffer account</span><span class="s">The account that holds the emergency fund.</span></span><span class="r">' + (st.buffer_account ? esc(st.buffer_account) : '<span class="muted">Not set</span>') + '</span></button></div>';
+    html += '<div class="card"><label class="chk"><input type="checkbox" id="bsLast"' + (st.last_month ? ' checked' : '') + '> Use last month\'s income for this month</label>' +
+      '<p class="note">Each income then funds the month after it, so you always spend money you already have. Turn it on once next month is 100% covered.' + (b.nextCovered.pct !== null ? ' Next month is ' + b.nextCovered.pct + '% covered now.' : '') + '</p></div>';
+    var walls = b.categories.slice();
+    html += '<div class="card" style="gap:0"><div class="cardhead"><div class="label">Four Walls</div></div><p class="stephelp">The essentials that are funded first: food at home, utilities, housing and transport.</p>';
+    if (!walls.length) html += '<p class="note">Set a target on a category first.</p>';
+    walls.forEach(function (l, i) { html += '<div class="planrow" style="padding:8px 0"><label class="chk" style="margin:0"><input type="checkbox" data-wall="' + esc(l.name) + '"' + (l.walls ? ' checked' : '') + '> ' + esc(l.name) + '</label></div>'; });
+    html += '</div>';
+    root.innerHTML = html;
+    function numDialog(title, body, key, label) {
+      dialog({ title: title, body: body, input: { numeric: true, placeholder: 'Rp, or 0 for none', value: st[key] ? Number(st[key]).toLocaleString('id-ID') : '' }, actions: [{ label: 'Cancel' }, { label: 'Save', primary: true, fn: function (val, say) {
+        var args = {}; args[key === 'starter_target' ? 'starterTarget' : 'fullTarget'] = val === '' ? 0 : Number(String(val).replace(/[^\d]/g, ''));
+        if (!budgetSend('set_budget_settings', args, label, say)) return false;
+        setTimeout(function () { paintSettings(); paintCurrent(); }, 0);
+      } }] });
+    }
+    root.querySelector('[data-set="starter"]').addEventListener('click', function () { numDialog('Starter emergency fund', 'How much should the buffer account hold before you start paying off debts?', 'starter_target', 'the starter fund'); });
+    root.querySelector('[data-set="full"]').addEventListener('click', function () { numDialog('Full emergency fund', 'Three to six months of costs. It is built after your last debt is paid.', 'full_target', 'the full emergency fund'); });
+    root.querySelector('[data-set="buffer"]').addEventListener('click', function () {
+      var banks = E.accountList().filter(function (a) { return C_kind(a) === 'bank' && a.entity !== 'PT'; }).map(function (a) { return { name: a.account, value: a.account }; });
+      openPicker({ items: [{ name: 'None', value: '' }].concat(banks), selected: st.buffer_account, title: 'Buffer account', onPick: function (val) {
+        budgetSend('set_budget_settings', { bufferAccount: val }, 'the buffer account'); setTimeout(function () { paintSettings(); paintCurrent(); }, 0);
+      } });
+    });
+    $('bsLast').addEventListener('change', function () {
+      var on = $('bsLast').checked;
+      function go2() { budgetSend('set_budget_settings', { lastMonth: on }, 'the last month setting'); banner('Saved'); setTimeout(function () { paintSettings(); paintCurrent(); }, 0); }
+      if (on && b.nextCovered.pct !== null && b.nextCovered.pct < 100) {
+        $('bsLast').checked = false;
+        confirmBox('Next month is only ' + b.nextCovered.pct + '% covered. If you turn this on now, income that arrives this month will stop filling this month\'s plan.', 'Turn it on', go2);
+      } else go2();
+    });
+    root.querySelectorAll('[data-wall]').forEach(function (c) { c.addEventListener('change', function () { budgetSend('set_four_walls', { category: c.getAttribute('data-wall'), on: c.checked }, 'Four Walls for ' + c.getAttribute('data-wall')); paintCurrent(); }); });
+  }
+  function C_kind(a) { return window.HanaroCore.kindOf_(a); }
+  $('bsBack').addEventListener('click', function () { $('budSettings').hidden = true; });
+  /** After any change, the open sheets follow the phone's own copy. */
+  function repaintOverlays() {
+    if (!$('catSheet').hidden) paintCat();
+    if (!$('budSettings').hidden) paintSettings();
+  }
 
 
   /* ---------- Spending report: where the money went this month ---------- */
@@ -587,7 +838,9 @@
   }
   function paintReport(v, d) {
     var isNow = d.month === localIso().slice(0, 7), todayN = isNow ? Number(localIso().slice(8, 10)) : 0;
-    var html = '<div style="' + TITLE + '">Spending</div>' + tabsHtml('report');
+    var html = '<div style="' + TITLE + '">Spending</div>';
+    var bud = budgetData(), budNames = {};
+    if (bud) bud.d.categories.forEach(function (l) { budNames[l.name] = true; });
     html += '<div class="chips" id="mchips">' + d.months.slice(0, 14).map(function (m) { return '<button class="chip' + (m === d.month ? ' on' : '') + '" data-month="' + m + '">' + monthChip(m) + '</button>'; }).join('') + '</div>';
     var b = bigParts(d.total);
     html += '<div class="card"><div class="label">Spent in ' + PM[d.month.slice(5, 7)] + '</div><div class="big"><span class="rp">Rp</span><span class="n">' + esc(b.n) + '</span><span class="z">' + esc(b.z) + '</span></div>';
@@ -601,7 +854,8 @@
     d.groups.forEach(function (g) {
       html += '<div class="card" style="gap:2px"><div class="cardhead"><div class="label">' + esc(g.group) + '</div><span class="note"><b>' + rpShort(g.amount) + '</b> · ' + (d.total ? Math.round(g.amount / d.total * 100) : 0) + '%</span></div>';
       g.categories.forEach(function (c) {
-        html += '<button class="crow" data-cat="' + esc(c.category) + '"><span class="cn"><span class="p">' + esc(c.category) + '</span><span class="s">' + (c.count ? c.count + ' purchase' + (c.count === 1 ? '' : 's') : '') + '</span></span><span class="cv">' + rp(c.amount) + '<span class="cbar"><span style="width:' + Math.max(2, d.total ? Math.round(c.amount / d.total * 100) : 0) + '%"></span></span></span></button>';
+        html += '<div class="crw"><button class="crow" data-cat="' + esc(c.category) + '"><span class="cn"><span class="p">' + esc(c.category) + '</span><span class="s">' + (c.count ? c.count + ' purchase' + (c.count === 1 ? '' : 's') : '') + '</span></span><span class="cv">' + rp(c.amount) + '<span class="cbar"><span style="width:' + Math.max(2, d.total ? Math.round(c.amount / d.total * 100) : 0) + '%"></span></span></span></button>' +
+          (budNames[c.category] ? '<button class="blink" data-budcat="' + esc(c.category) + '" aria-label="Open ' + esc(c.category) + ' in Budget">Budget ›</button>' : '') + '</div>';
       });
       html += '</div>';
     });
@@ -611,7 +865,8 @@
     if (d.biggest && d.biggest.length > 1) {
       html += '<div class="card"><div class="label">Biggest purchases</div>' + d.biggest.map(function (t) { return '<div class="kv"><span>' + esc(t.payee || '(no name)') + '<div class="sub">' + dayLabel(t.date) + ' · ' + esc(t.category || 'No category') + '</div></span><span>' + rp(t.amount) + '</span></div>'; }).join('') + '</div>';
     }
-    v.innerHTML = html; wireTabs(v);
+    v.innerHTML = html;
+    v.querySelectorAll('[data-budcat]').forEach(function (b) { b.addEventListener('click', function () { var n = b.getAttribute('data-budcat'); go('budget'); openCat(n); }); });
     v.querySelectorAll('[data-month]').forEach(function (b) { b.addEventListener('click', function () { state.spendMonth = b.getAttribute('data-month'); render(); }); });
     v.querySelectorAll('[data-cat]').forEach(function (b) { b.addEventListener('click', function () { state.actCat = b.getAttribute('data-cat'); state.actFilter = 'All'; state.actQ = ''; state.actSearchOn = false; go('activity'); }); });
     var act = v.querySelector('#mchips .on'); if (act && act.scrollIntoView) { try { act.scrollIntoView({ inline: 'center', block: 'nearest' }); } catch (e) {} }
@@ -642,9 +897,28 @@
       send('set_limit', { account: x.account, limit: amt }, 'the limit of ' + x.account).then(afterWrite); banner('Saved'); render();
     } }] });
   }
+  /** Company cash, personal cash, debts in snowball order and net worth. Works with any server: it only needs the accounts. */
+  function wealthCard() {
+    var w = E.view('wealth', localIso().slice(0, 10));
+    if (!w) return '';
+    var html = '<div class="card wealth"><div class="label">Wealth</div>' + bigHtml(w.netWorth, w.netWorth < 0 ? 'neg' : '') + '<div class="note" style="margin-top:-2px">Net worth</div><div class="rule"></div>';
+    if (!w.partner) html += '<div class="kv"><span>Company cash</span><b>' + rp(w.company) + '</b></div>';
+    html += '<div class="kv"><span>Personal cash</span><b>' + rp(w.personal) + '</b></div>';
+    if (w.held > 0) html += '<div class="kv"><span>Held for other people</span><b>−' + rp(w.held) + '</b></div>';
+    if (!w.partner && w.companyOwed > 0) html += '<div class="kv"><span>Company debt</span><b>−' + rp(w.companyOwed) + '</b></div>';
+    html += '<div class="kv"><span>Debts</span><b>−' + rp(w.owe) + '</b></div>';
+    if (w.debts.length) {
+      html += '<div class="rule"></div><div class="label" style="margin-bottom:2px">Debts, in the order you pay them</div>';
+      w.debts.forEach(function (x, i) {
+        html += '<div class="kv" style="padding:5px 0"><span>' + (i + 1) + '. ' + esc(x.name) + (x.name === w.focus ? ' <span class="tag focus">FOCUS</span>' : '') + (x.owed === 0 ? ' <span class="tag paid">PAID OFF</span>' : '') + '</span><span>' + (x.owed === null ? '<span class="muted">No balance</span>' : rp(x.owed)) + '</span></div>';
+      });
+    }
+    if (w.unknown) html += '<p class="note" style="margin-top:6px;color:var(--warn)">' + w.unknown + ' account' + (w.unknown === 1 ? ' has' : 's have') + ' no confirmed figure yet, so net worth is not complete.</p>';
+    return html + '</div>';
+  }
   function paintAccounts(v, d) {
     var owner = state.role === 'owner';
-    var html = '<div style="' + TITLE + '">Accounts</div>';
+    var html = '<div style="' + TITLE + '">Account</div>' + wealthCard();
     var nb = bigParts(d.cash);
     html += '<div class="card"><div class="label">In bank accounts</div><div class="big"><span class="rp">Rp</span><span class="n">' + esc(nb.n) + '</span><span class="z">' + esc(nb.z) + '</span></div>' +
       '<div class="rule"></div><div class="kv"><span>Owed on cards and loans</span><b>' + rp(d.owed) + '</b></div>' +
@@ -1650,7 +1924,7 @@
   (function () {
     var y0 = null, pulled = 0, ind = null;
     function top() { return (window.scrollY || document.documentElement.scrollTop || 0) <= 0; }
-    document.addEventListener('touchstart', function (ev) { if (top() && $('sheet').hidden && $('picker').hidden && $('txnEdit').hidden && $('planEdit').hidden && $('dlg').hidden && ev.touches.length === 1) { y0 = ev.touches[0].clientY; pulled = 0; } else y0 = null; }, { passive: true });
+    document.addEventListener('touchstart', function (ev) { if (top() && $('sheet').hidden && $('picker').hidden && $('txnEdit').hidden && $('catSheet').hidden && $('moveSheet').hidden && $('planNext').hidden && $('budSettings').hidden && $('dlg').hidden && ev.touches.length === 1) { y0 = ev.touches[0].clientY; pulled = 0; } else y0 = null; }, { passive: true });
     document.addEventListener('touchmove', function (ev) {
       if (y0 === null) return;
       pulled = ev.touches[0].clientY - y0;

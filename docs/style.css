@@ -136,7 +136,6 @@ button.rc{font-size:12px;padding:4px 0;min-height:32px;color:var(--muted)}
 .tag.soon{background:var(--yellow);color:var(--yellowText)}.tag.late{background:#FFE9E5;color:var(--warn)}
 .cardhead{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
 button.addrow{border:0;background:none;color:var(--teal);font-weight:600;font-size:14px;text-align:left;padding:12px 0 4px;min-height:44px}
-#planEdit{position:fixed;inset:0;z-index:30;background:#F4FAF8;overflow:auto;padding:max(14px,env(safe-area-inset-top)) 16px 40px;max-width:520px;margin:0 auto}
 
 .chk{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:600;color:var(--text)}.chk input{appearance:auto;-webkit-appearance:checkbox;width:24px;height:24px;min-height:0;padding:0;flex:none;margin:0;accent-color:var(--teal)}
 .ptrow{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--line)}.ptrow .s{font-size:12px;color:var(--muted)}
@@ -305,3 +304,62 @@ button.card.tap{width:100%;border:0;font:inherit;color:var(--text);cursor:pointe
 button.card.tap .chev{position:static;font-size:22px;color:var(--muted)}
 .meter{height:8px;border-radius:99px;background:#DCEBE8;overflow:hidden;margin:6px 0 2px}.meter>span{display:block;height:100%;border-radius:99px;background:#13867C}.meter.hi>span{background:#E0A800}.meter.max>span{background:var(--warn)}
 .tag.clr{background:#E6F7EE;color:#0B6F4A}.tag.wait{background:#FFF4D6;color:var(--yellowText)}
+
+/* ---- Budget (v3) ---- */
+/* Six items in the floating nav: the open one shows its name, the others are small so all of them fit a 320 px phone */
+@media (max-width:999px){
+  nav{padding:0 6px}
+  nav button{width:42px;height:44px}
+  nav button.on{padding:0 12px;gap:6px;font-size:11.5px;letter-spacing:.03em}
+  nav button.add{width:46px;height:46px}
+}
+.ovl{position:fixed;inset:0;z-index:12;background:#F4FAF8;overflow:auto;padding:max(14px,env(safe-area-inset-top)) 16px 110px;max-width:520px;margin:0 auto}
+.ovl .card{margin-bottom:14px}
+.ovl .stick{position:sticky;bottom:14px;box-shadow:0 8px 24px rgba(11,111,122,.3);margin-top:6px}
+.hero .big .n{font-size:58px}
+.hero .big .n.neg{color:var(--warn)}
+.hero .sub2{font-size:14px;margin-top:2px}
+.waitnote{background:var(--yellow);color:var(--yellowText);border-radius:14px;padding:10px 12px;font-size:13px;line-height:1.45;margin-top:6px}
+.okaynote{background:#E6F7EE;color:#0B6F4A;border-radius:14px;padding:10px 12px;font-size:13px;line-height:1.45;margin-top:6px}
+.glabel{font-size:11.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:14px 0 2px}
+.glabel:first-of-type{margin-top:8px}
+.hrow,.brow{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;row-gap:5px;align-items:center;width:100%;border:0;border-bottom:1px solid var(--line);background:none;font:inherit;color:var(--text);padding:11px 0 10px;text-align:left;min-height:56px}
+.hrow:last-child,.brow:last-child{border-bottom:0}
+.hrow .p,.brow .p{display:block;font-weight:600;font-size:14.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brow .s,.hrow .s{display:block;font-size:12px;color:var(--muted);line-height:1.35}
+.hrow .br,.brow .br{text-align:right;white-space:nowrap}
+.hrow b,.brow b{font-size:15px;font-weight:600}
+.hrow b.neg,.brow b.neg{color:var(--warn)}
+.hrow .meter,.brow .meter{grid-column:1/-1;margin:0}
+.meter.thin{height:5px}
+.meter.thin.hi>span{background:#E0A800}
+.stephelp{font-size:12.5px;line-height:1.45;color:var(--muted);margin:2px 0 4px}
+.chiprow{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.irow{padding:12px 0;border-bottom:1px solid var(--line)}.irow:last-child{border-bottom:0}
+.irow .top{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.irow .top b{font-size:16px;font-weight:600}
+.drow{display:grid;grid-template-columns:minmax(0,1fr) auto auto;column-gap:8px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}
+.drow:last-child{border-bottom:0}
+.drow.focus{background:linear-gradient(90deg,#E6F7EE,rgba(230,247,238,0));margin:0 -18px;padding:11px 18px;border-radius:16px}
+.drow .p{font-weight:600;font-size:14.5px}.drow .s{display:block;font-size:12px;color:var(--muted)}
+.drow .r{text-align:right;font-size:14px;white-space:nowrap}
+.arrs{display:flex;flex-direction:column;gap:2px}
+.arr{width:36px;height:30px;border:1px solid #B7DAD6;background:#fff;border-radius:10px;color:var(--teal);font-size:15px;line-height:1;padding:0}
+.arr:disabled{opacity:.3}
+.tag.focus{background:#DDF5EA;color:var(--good)}.tag.walls{background:#EDE9FF;color:#4B3BA8}
+.crw{display:flex;align-items:center;gap:6px;border-bottom:1px solid var(--line)}.crw:last-child{border-bottom:0}
+.crw .crow{border-bottom:0;flex:1;min-width:0}
+.blink{flex:none;border:1px solid #B7DAD6;background:#F4FAF8;color:var(--teal);border-radius:14px;font-size:12px;font-weight:600;padding:0 10px;min-height:32px}
+.planrow{padding:12px 0;border-bottom:1px solid var(--line)}.planrow:last-child{border-bottom:0}
+.planrow .nm{display:flex;justify-content:space-between;gap:8px;align-items:baseline}.planrow .nm .p{font-weight:600;font-size:15px}
+.planrow .hist{font-size:12.5px;color:var(--muted);margin:2px 0 6px}
+.planrow .inl{display:flex;gap:8px;align-items:center}
+.planrow input[type=text],.planrow input:not([type]){min-height:44px;padding:8px 12px;font-size:16px;flex:1;min-width:0}
+.sugbtn{flex:none;border:1px solid #B7DAD6;background:#F4FAF8;color:var(--teal);border-radius:14px;font-size:12.5px;font-weight:600;padding:0 12px;min-height:44px;white-space:nowrap}
+.planrow .chk{font-size:13px;font-weight:500;color:var(--muted);margin-top:8px}
+.planrow .chk input{width:20px;height:20px}
+.sumbar{display:flex;justify-content:space-between;align-items:baseline}
+.txr{display:flex;justify-content:space-between;gap:10px;width:100%;border:0;border-bottom:1px solid var(--line);background:none;font:inherit;color:var(--text);text-align:left;padding:10px 0}
+.txr:last-child{border-bottom:0}.txr .s{display:block;font-size:12px;color:var(--muted)}
+.wealth .big .n{font-size:48px}.wealth .big .n.neg{color:var(--warn)}
+.irow .top b{white-space:nowrap}.irow .top>span{min-width:0}

@@ -29,9 +29,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await sleep(400); await shot(page, '01-home');
   ok('home shows spent today', (await page.textContent('.big .n')).length > 0);
 
-  // Nav has the five places
+  // Nav has the five places and the Add button
   const navLabels = await page.$$eval('nav button', (b) => b.map((x) => x.getAttribute('aria-label')));
-  ok('nav is Home, Activity, Add, Spending, Accounts', JSON.stringify(navLabels) === JSON.stringify(['Home', 'Activity', 'Add transaction', 'Spending', 'Accounts']), navLabels);
+  ok('nav is Home, Budget, Add, Spending, Activity, Account', JSON.stringify(navLabels) === JSON.stringify(['Home', 'Budget', 'Add transaction', 'Spending', 'Activity', 'Account']), navLabels);
 
   // Add a spend with the calculator keypad
   await page.click('#addBtn'); await page.waitForSelector('#sheet:not([hidden])');
@@ -115,16 +115,102 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await page.evaluate(() => window.dispatchEvent(new Event('online'))); await sleep(2500);
   ok('lost reply then retry saves one row, not two', byPayee('Lost Reply').length === 1, byPayee('Lost Reply').length);
 
-  // Spending report and plan
+  // Spending is the report; the old Plan tabs are gone and a category row links to Budget later on
   await page.click('nav [data-go="spending"]'); await page.waitForSelector('.crow'); await sleep(400); await shot(page, '09-spending-report');
   ok('report lists categories', (await page.$$('.crow')).length >= 2);
-  await page.click('[data-stab="plan"]'); await page.waitForSelector('.prow2'); await sleep(300); await shot(page, '10-spending-plan');
-  await page.click('[data-stab="report"]'); await page.waitForSelector('.crow');
+  ok('Spending is the report only: no Report / Plan tabs', (await page.$$('[data-stab]')).length === 0);
   await page.click('.crow:has-text("Groceries")'); await page.waitForSelector('[data-clearcat]'); await shot(page, '11-category-drill');
   ok('tapping a category opens Activity filtered to it', (await page.$$('.arow')).length >= 1);
 
+  // ---- Budget: seed a month with invented numbers through the real API, then use the screens ----
+  const vm = require('vm');
+  const call = (who, action, args) => { S.sb.__post = { postData: { contents: JSON.stringify(Object.assign({ key: S.KEYS[who], action }, args || {})) } }; return JSON.parse(vm.runInContext('doPost(__post)', S.sb).text); };
+  const D = S.book.data, jak = new Date(Date.now() + 7 * 3600000).toISOString(), todayStr = jak.slice(0, 10), monthStart = jak.slice(0, 8) + '01', thisMonth = jak.slice(0, 7);
+  const nextMonth = vm.runInContext('nextMonth_("' + thisMonth + '")', S.sb);
+  D.Categories.push(['Home', 'Rent', 'Y', 'Y', 6, ''], ['Fun', 'Fun', 'Y', 'Y', 7, ''], ['Home', 'Internet', 'Y', 'Y', 8, '']);
+  D.Accounts.push(['Safety Net', 'savings', 'Household', 'AJ', '5555', 'Y', 'Y', '', '']);
+  D.Balances.push([todayStr, 'Safety Net', 1000000, 'manual', 'AJ']);
+  const hex = (n) => 't_' + String(n).padStart(12, '0').replace(/[^0-9a-f]/g, '0');
+  [[hex(901), 20000000, monthStart], [hex(902), 12000000, monthStart], [hex(903), 8000000, todayStr]].forEach(([id, amount, date]) => call('aj', 'add_txn', { id, kind: 'transfer', amount, account: 'Bank PT', toAccount: 'Bank A', date }));
+  [['Groceries', 3000000], ['Utilities', 1500000], ['Eating out', 1500000], ['Fuel', 800000], ['Fun', 1000000]].forEach(([category, amount]) => call('aj', 'set_target', { category, amount }));
+  call('aj', 'set_target', { category: 'Internet', amount: 500000, dueDay: 5 });
+  ['Groceries', 'Utilities'].forEach((category) => call('aj', 'set_four_walls', { category, on: true }));
+  call('aj', 'set_budget_settings', { starterTarget: 5000000, fullTarget: 30000000, bufferAccount: 'Safety Net' });
+  ok('the seed went in without an error', call('aj', 'sync', {}).ok === true);
+  await page.reload(); await page.waitForSelector('.hero'); await sleep(1500);
+  ok('Home leads with Left to spend this month', /Left to spend this month/.test(await page.textContent('.hero')));
+  const heroN = async (p) => (await p.textContent('.hero .big')).replace(/[^\d]/g, '');
+  const ownerLeft = await heroN(page), ownerIncomes = null;
+  ok('Home lists every budgeted category with its Left', (await page.$$('.hrow')).length >= 7, (await page.$$('.hrow')).length);
+  ok('Home says the plan is covered when income has filled it', (await page.$$('.okaynote')).length === 1 && (await page.$$('.waitnote')).length === 0);
+  ok('Home keeps Spent today as a small line', /Spent today/.test(await page.textContent('.hero .sub2')));
+  await shot(page, '20-home');
+  await page.click('.hrow[data-hcat="Groceries"]'); await page.waitForSelector('[data-clearcat]');
+  ok('tapping a category on Home opens its transactions', /Groceries/.test(await page.textContent('[data-clearcat]')));
+  await page.click('nav [data-go="budget"]'); await page.waitForSelector('.brow'); await sleep(500);
+  await shot(page, '21-budget');
+  const bt = await page.textContent('#view');
+  ok('Budget shows this month\'s plan and the stage in plain words', /This month's plan/.test(bt) && /Step 6 of the plan: paying off one debt at a time\. Focus: Card A\./.test(bt), bt.slice(0, 200));
+  ok('Budget shows next month covered', /Next month covered/.test(bt) && /100%/.test(bt));
+  ok('Budget offers last month pays this month once next month is covered', (await page.$$('[data-last-on]')).length === 1);
+  ok('Budget lists each income with where it went', (await page.$$('.irow')).length >= 3 && /Four Walls/.test(await page.textContent('.irow')));
+  ok('Budget has the six steps', (await page.$$eval('#view .card .label', (e) => e.map((x) => x.textContent))).filter((t) => /^Step \d/.test(t)).length === 6);
+  ok('the snowball highlights the focus debt: the smallest balance', /Card A/.test(await page.textContent('.drow.focus')));
+  const ownerIncomeCount = (await page.$$('.irow')).length;
+  await page.screenshot({ path: path.join(shots, '22-budget-full.png'), fullPage: true });
+
+  // a category: set the target, Four Walls, move money
+  await page.click('[data-bcat="Fun"]'); await page.waitForSelector('#catSheet:not([hidden])'); await sleep(200);
+  await page.fill('#csTarget', '1200000'); await shot(page, '24-category');
+  await page.click('#csSave'); await sleep(1800);
+  const budRows = () => D.Budget.slice(1).map((r) => { const o = {}; D.Budget[0].forEach((k, i) => { o[k] = r[i]; }); return o; });
+  ok('a category target typed on the phone reached the Sheet', budRows().filter((r) => r.item === 'Fun' && r.kind === 'target').pop().amount_idr === 1200000);
+  await page.click('#csBack');
+  await page.click('[data-bcat="Fuel"]'); await page.waitForSelector('#catSheet:not([hidden])'); await page.click('#csWalls'); await sleep(1800);
+  ok('Four Walls switched on reached the Sheet', budRows().filter((r) => r.item === 'Fuel' && r.kind === 'walls').pop().walls === 'Y');
+  await page.click('#csBack'); await sleep(300);
+  const step1 = await page.$$eval('#view .card', (cs) => cs.filter((c) => /Step 1/.test(c.textContent)).map((c) => c.textContent)[0]);
+  ok('the category moved up to step 1', /Fuel/.test(step1), step1);
+  await page.click('[data-bcat="Groceries"]'); await page.waitForSelector('#catSheet:not([hidden])'); await page.click('#csMove'); await page.waitForSelector('#moveSheet:not([hidden])');
+  await page.click('#mvTo'); await page.waitForSelector('#picker:not([hidden])'); await page.click('#pickList [data-cat="Fun"]');
+  await page.fill('#mvAmount', '100000'); await shot(page, '25-move'); await page.click('#mvSave'); await sleep(1800);
+  const moves = D.BudgetMoves ? D.BudgetMoves.slice(1) : [];
+  ok('move money is saved once as its own line', moves.length === 1 && moves[0][3] === 'Groceries' && moves[0][4] === 'Fun' && moves[0][5] === 100000, moves);
+  await page.click('#csBack');
+  // snowball order
+  await page.click('.drow:has-text("Card Y") [data-dmove="-1"]'); await sleep(1800);
+  ok('moving a debt up pins the order and it becomes the focus', D.DebtOrder && D.DebtOrder.length === 2 && /Card Y/.test(await page.textContent('.drow.focus')), D.DebtOrder);
+  // settings
+  await page.click('[data-open-settings]'); await page.waitForSelector('#budSettings:not([hidden])'); await sleep(200); await shot(page, '26-settings');
+  await page.click('[data-set="starter"]'); await page.fill('.dbox .di', '6000000'); await page.click('.dbox .primary'); await sleep(1800);
+  ok('the starter fund target reached the Sheet', D.BudgetSettings.slice(1).filter((r) => r[0] === 'starter_target').pop()[1] === 6000000);
+  await page.click('#bsBack');
+  // plan next month
+  await page.click('[data-plan-next]'); await page.waitForSelector('#planNext:not([hidden])'); await sleep(300);
+  ok('Plan next month lists the categories with a suggested target', (await page.$$('#planNextBody .planrow')).length >= 6 && (await page.$$('#planNextBody [data-ps]')).length >= 1);
+  await shot(page, '23-plan-next');
+  await page.click('#planNextBody [data-ps]'); await page.click('#pnSave'); await sleep(1800);
+  ok('Plan next month saved targets for next month and marked the review done', budRows().filter((r) => r.month === nextMonth && r.kind === 'target').length >= 6 && D.BudgetSettings.slice(1).some((r) => r[0] === 'reviewed' && String(r[1]) === nextMonth));
+  await page.waitForSelector('.brow');
+  ok('Budget now says the plan for next month is set', /Change the plan for/.test(await page.textContent('#view')));
+  // Spending links to Budget
+  await page.click('nav [data-go="spending"]'); await page.waitForSelector('.crow'); await sleep(300);
+  await page.click('[data-budcat="Groceries"]'); await page.waitForSelector('#catSheet:not([hidden])');
+  ok('a Spending category row opens the same category in Budget', (await page.textContent('#catSheetTitle')) === 'Groceries');
+  await page.click('#csBack');
+  // a partner sees the same budget but not the owner-only settings
+  const cb = await phone('cynthia');
+  await cb.goto(base + '/'); await cb.waitForSelector('.hero'); await sleep(1500);
+  ok('Cynthia\'s Home shows the same Left to spend as AJ\'s, with the company money sent without account names', (await heroN(cb)) === String(await page.evaluate(() => window.HanaroEngine.view('budget', new Date().toISOString().slice(0, 10)).leftToSpend)), [await heroN(cb)]);
+  await cb.click('nav [data-go="budget"]'); await cb.waitForSelector('.brow'); await sleep(300);
+  ok('Cynthia has no plan or settings buttons, and no company account in her data', (await cb.$$('[data-plan-next], [data-open-settings]')).length === 0 && !(await cb.evaluate(() => JSON.stringify(window.HanaroEngine.view('budget', new Date().toISOString().slice(0, 10))))).includes('Bank PT'));
+  ok('her Budget funds from the same incomes as his', (await cb.$$('.irow')).length === ownerIncomeCount, [(await cb.$$('.irow')).length, ownerIncomeCount]);
+  await cb.context().close();
+
   // Accounts
   await page.click('nav [data-go="accounts"]'); await page.waitForSelector('[data-bank]'); await sleep(600); await shot(page, '12-accounts');
+  ok('Account leads with the Wealth card: company cash, personal cash, debts in order and net worth', /Wealth/.test(await page.textContent('.wealth')) && /Company cash/.test(await page.textContent('.wealth')) && /Net worth/.test(await page.textContent('.wealth')));
+  await page.screenshot({ path: path.join(shots, '27-account-full.png'), fullPage: true });
   await page.click('[data-bank="0"]'); await page.fill('.dbox .di', '13500000'); await page.click('.dbox .primary'); await sleep(1800);
   const bal = S.book.data.Balances.slice(1).filter((r) => r[1] === 'Bank A').pop();
   ok('balance typed in a dialog reached the Sheet', Number(bal[2]) === 13500000, bal);

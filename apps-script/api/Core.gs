@@ -714,7 +714,7 @@ function budgetRun_(d) {
       if (lines[k]) return lines[k];
       var t = targets[c], w = !!walls[c];
       return mk(k, { name: c, group: ctx.idx.byName[c] || '', step: w ? 1 : (t && t.dueDay !== null ? 2 : 4), target: t ? t.amount : 0, dueDay: t ? t.dueDay : null,
-        due: t ? dueOf_(M, t.dueDay, t.weekend) : null, legacy: !!(t && t.legacy), walls: w, carryIn: st.carry[c] || 0, spent: ((spent[M] || {})[c]) || 0 });
+        due: t ? dueOf_(M, t.dueDay, t.weekend) : null, weekend: t ? t.weekend : '', legacy: !!(t && t.legacy), walls: w, carryIn: st.carry[c] || 0, spent: ((spent[M] || {})[c]) || 0 });
     }
     Object.keys(targets).forEach(catLine);
     Object.keys(st.carry).forEach(function (c) { if (st.carry[c] > 0) catLine(c); });
@@ -867,7 +867,7 @@ function budgetView_(a) {
     month: M, ready: run.ready, steps: steps, categories: catLines, planTarget: planTarget, planFunded: planFunded, waiting: Math.max(0, planTarget - planFunded),
     leftToSpend: leftToSpend, nextCovered: nextCovered, incomes: incomes, stage: stage, focus: focus, debts: r.debts, allClear: r.allClear,
     settings: settings, overspendOwed: r.overIn, unbudgeted: unbudgeted, nextMonth: run.nxt, reviewedNext: settings.reviewed === run.nxt,
-    walls: run.walls, hasIncome: incomes.length > 0
+    walls: run.walls, pinned: run.pinned, hasIncome: incomes.length > 0
   };
 }
 

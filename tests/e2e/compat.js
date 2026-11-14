@@ -1,11 +1,16 @@
 // The new app against the OLD server code (before this update). It must stay usable until the new server code is pasted.
-// Usage: node tests/e2e/compat.js <folder with the old Api.gs and Logic.gs>
+// Usage: node tests/e2e/compat.js [folder with the old Api.gs and Logic.gs]
+// With no folder it takes the API code from the last commit before the budget feature (git), so the check can always be run.
 const { createServer } = require('./harness');
+const fs = require('fs'), path = require('path'), os = require('os'), cp = require('child_process');
+let oldDir = process.argv[2];
+if (!oldDir) { const t = fs.mkdtempSync(path.join(os.tmpdir(), 'hanaro-old-')); cp.execSync('git -C ' + path.join(__dirname, '../..') + ' archive 91bb22e apps-script/api | tar -x -C ' + t); oldDir = path.join(t, 'apps-script/api'); }
+const oldV = Number((fs.readFileSync(path.join(oldDir, 'Api.gs'), 'utf8').match(/API_V = (\d+)/) || [0, 1])[1]);
 const { chromium } = require('playwright');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failed = 0; const ok = (n, c, x) => { if (c) console.log('ok  ', n); else { failed++; console.log('FAIL', n, x === undefined ? '' : JSON.stringify(x)); } };
 (async () => {
-  const S = createServer({ codeDir: process.argv[2] }); await new Promise((r) => S.server.listen(0, r));
+  const S = createServer({ codeDir: oldDir }); await new Promise((r) => S.server.listen(0, r));
   const base = 'http://localhost:' + S.server.address().port;
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: 'block' });
@@ -16,18 +21,34 @@ let failed = 0; const ok = (n, c, x) => { if (c) console.log('ok  ', n); else { 
   await page.goto(base + '/'); await page.waitForSelector('.big .n'); await sleep(500);
   ok('home loads on the old server', true);
   await page.click('#addBtn'); await page.waitForSelector('#sheet:not([hidden])');
-  ok('Transfer and card payment are hidden on the old server', (await page.$eval('#kindTransfer', (e) => e.hidden)) && (await page.$eval('#kindPay', (e) => e.hidden)));
-  for (const k of ['3', '0', 'L']) await page.click('#keypad [data-k="' + k + '"]');
-  await page.click('#keypad [data-k="done"]'); await page.fill('#addPayee', 'Old Server Cafe'); await page.click('#catBtn'); await page.click('#pickList [data-cat="Eating out"]');
-  await page.click('#addSave'); await sleep(2000);
-  const r = rows().slice(1).filter((x) => col(x, 'payee') === 'Old Server Cafe');
-  ok('an entry saves on the old server, once', r.length === 1 && Number(col(r[0], 'idr_amount')) === 30000, r.length);
-  await page.click('nav [data-go="activity"]'); await page.waitForSelector('.arow'); await sleep(300);
-  ok('Activity shows it', (await page.$$('.arow:has-text("Old Server Cafe")')).length === 1);
-  await page.click('nav [data-go="spending"]'); await sleep(1200);
-  ok('Spending shows the plan, no tabs, on the old server', (await page.$$('[data-stab]')).length === 0 && (await page.$$('.prow2')).length > 0);
-  await page.click('nav [data-go="accounts"]'); await sleep(1500);
-  ok('Accounts falls back to the old Status screen', (await page.textContent('#view')).includes('Email sync'), (await page.textContent('#view')).slice(0, 120));
+  if (oldV >= 4) {
+    ok('Home shows the old Spent today card, no budget number, on the old server', (await page.textContent('#view')).includes('Spent today') && (await page.$$('.hero')).length === 0);
+    for (const k of ['3', '0', 'L']) await page.click('#keypad [data-k="' + k + '"]');
+    await page.click('#keypad [data-k="done"]'); await page.fill('#addPayee', 'Old Server Cafe'); await page.click('#catBtn'); await page.click('#pickList [data-cat="Eating out"]');
+    await page.click('#addSave'); await sleep(2000);
+    const r = rows().slice(1).filter((x) => col(x, 'payee') === 'Old Server Cafe');
+    ok('an entry saves on the old server, once', r.length === 1 && Number(col(r[0], 'idr_amount')) === 30000, r.length);
+    await page.click('nav [data-go="budget"]'); await sleep(1500);
+    const bt = await page.textContent('#view');
+    ok('Budget shows one plain line asking for the new Code.gs', bt.includes('Budget needs the new server code. Paste Code.gs into Apps Script to turn it on.') && (await page.$$('.brow, [data-plan-next]')).length === 0, bt.slice(0, 160));
+    await page.click('nav [data-go="spending"]'); await sleep(1200);
+    ok('Spending still shows the report on the old server', (await page.$$('.crow')).length > 0 && (await page.$$('[data-stab]')).length === 0);
+    await page.click('nav [data-go="accounts"]'); await sleep(1500);
+    ok('Account works and its Wealth card needs nothing new', (await page.$$('.wealth')).length === 1);
+  } else {
+    ok('Transfer and card payment are hidden on the old server', (await page.$eval('#kindTransfer', (e) => e.hidden)) && (await page.$eval('#kindPay', (e) => e.hidden)));
+    for (const k of ['3', '0', 'L']) await page.click('#keypad [data-k="' + k + '"]');
+    await page.click('#keypad [data-k="done"]'); await page.fill('#addPayee', 'Old Server Cafe'); await page.click('#catBtn'); await page.click('#pickList [data-cat="Eating out"]');
+    await page.click('#addSave'); await sleep(2000);
+    const r = rows().slice(1).filter((x) => col(x, 'payee') === 'Old Server Cafe');
+    ok('an entry saves on the old server, once', r.length === 1 && Number(col(r[0], 'idr_amount')) === 30000, r.length);
+    await page.click('nav [data-go="activity"]'); await page.waitForSelector('.arow'); await sleep(300);
+    ok('Activity shows it', (await page.$$('.arow:has-text("Old Server Cafe")')).length === 1);
+    await page.click('nav [data-go="spending"]'); await sleep(1200);
+    ok('Spending shows the plan, no tabs, on the old server', (await page.$$('[data-stab]')).length === 0 && (await page.$$('.prow2')).length > 0);
+    await page.click('nav [data-go="accounts"]'); await sleep(1500);
+    ok('Accounts falls back to the old Status screen', (await page.textContent('#view')).includes('Email sync'), (await page.textContent('#view')).slice(0, 120));
+  }
   ok('no browser errors', errs.length === 0, errs.slice(0, 3));
   await browser.close(); S.server.close(); console.log(failed ? failed + ' FAILED' : 'Compat passed'); process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

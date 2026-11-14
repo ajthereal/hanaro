@@ -48,7 +48,9 @@
     var keep = (S && !d.full) ? S.txns.filter(function (t) { return t._local && byId[t.id] === undefined; }) : [];
     S = {
       apiV: d.apiV, user: d.user, accounts: d.accounts, balances: d.balances, cats: d.cats, archive: d.archive, plan: d.plan, paid: d.paid, summary: d.summary,
-      cutover: d.cutover, newest: d.newest || (S && S.newest) || '', now: d.now, txns: list.concat(keep), at: Date.now()
+      cutover: d.cutover, newest: d.newest || (S && S.newest) || '', now: d.now, txns: list.concat(keep), at: Date.now(),
+      // The budget tabs. An older server does not send them (no budgetV), and the Budget screen then says the server code needs pasting.
+      budgetV: d.budgetV || 0, budget: d.budget || [], moves: d.moves || [], bset: d.bset || [], dorder: d.dorder || [], debts: d.debts || [], debtBal: d.debtBal || [], ptIncomes: d.ptIncomes || []
     };
     persist();
   }
@@ -59,7 +61,15 @@
   function live() { if (droppedVer !== ver || !dropped) { dropped = C.dropMatchedManual_(S.txns); droppedVer = ver; } return dropped; }
   function ctx(today) { return { txns: live(), accounts: S.accounts, balances: S.balances, cats: S.cats, summary: S.summary, today: today, role: S.user && S.user.role }; }
 
+  /** Everything the budget sums read: the live entries, the raw ones (a typed company transfer must keep its destination), and the budget rows. */
+  function bctx(today, month) {
+    return { today: today, month: month, accounts: S.accounts, balances: S.balances, cats: S.cats, txns: live(), rawTxns: S.txns, plan: S.plan || [], budget: S.budget || [], moves: S.moves || [], bset: S.bset || [],
+      dorder: S.dorder || [], debts: S.debts || [], debtBal: S.debtBal || [], ptIncomes: S.ptIncomes || [], archive: S.archive, cutover: S.cutover, role: S.user && S.user.role };
+  }
   var views = {
+    budget: function (today, month) { return C.budgetView_(bctx(today, month)); },
+    planNext: function (today) { return C.planNextView_(bctx(today)); },
+    wealth: function (today) { return C.wealthView_(bctx(today)); },
     home: function (today) { var h = C.homeView_(ctx(today)); h.user = S.user; return h; },
     accounts: function (today) { return C.accountsView_(ctx(today)); },
     spending: function (today, month) { var c = ctx(today); return C.spendReport_({ month: month || today.slice(0, 7), today: today, accounts: S.accounts, txns: c.txns, cats: S.cats, archive: S.archive, cutover: S.cutover }); },
@@ -127,6 +137,19 @@
     S.accounts.forEach(function (x) { if (x.account === account) x.credit_limit = limit > 0 ? limit : ''; });
     persist();
   }
+  var BUDGET_TAB_KEY = { Budget: 'budget', BudgetMoves: 'moves', BudgetSettings: 'bset', DebtOrder: 'dorder' };
+  /** A budget change shown at once: the same rows the server will add (built by the same code), added to the phone's copy. Returns an error text, or '' when it was applied. */
+  function localBudget(action, args, stamp, checkOnly) {
+    if (!S) return '';
+    var today = stamp.slice(0, 10), b = bctx(today), pm = /^\d{4}-\d{2}$/.test(String(args.month || '')) ? args.month : (action === 'plan_next_month' ? C.nextMonth_(today.slice(0, 7)) : today.slice(0, 7));
+    var o = { who: S.user ? S.user.name : '', at: stamp, today: today, accounts: S.accounts, settings: C.budgetSettings_(S.bset), prev: C.monthTargets_(b, pm), id: args.id || ('mv_' + Math.random().toString(16).slice(2, 14)) };
+    var res = C.buildBudgetWrite_(action, args, o);
+    if (res.error) return res.error;
+    if (checkOnly) return '';
+    res.writes.forEach(function (w) { var k = BUDGET_TAB_KEY[w.tab]; S[k] = (S[k] || []).concat(w.rows); });
+    persist();
+    return '';
+  }
   /** The tracked figure of one account right now, sent with a balance confirmation so the Sheet keeps the gap. */
   function trackedNow(account, today) {
     if (!S) return null;
@@ -136,5 +159,5 @@
   }
 
   root.HanaroEngine = { load: load, ready: ready, clear: clear, absorb: absorb, since: since, view: view, categories: categories, accountList: accountList,
-    localAdd: localAdd, localUpdate: localUpdate, localStatus: localStatus, localFlag: localFlag, localBalance: localBalance, localLimit: localLimit, trackedNow: trackedNow, user: function () { return S && S.user; }, count: function () { return S ? S.txns.length : 0; }, apiV: function () { return S ? S.apiV : 0; } };
+    localAdd: localAdd, localUpdate: localUpdate, localStatus: localStatus, localFlag: localFlag, localBalance: localBalance, localLimit: localLimit, localBudget: localBudget, budgetCheck: function (action, args, stamp) { return localBudget(action, args, stamp, true); }, budgetOn: function () { return !!(S && S.budgetV >= 1); }, trackedNow: trackedNow, user: function () { return S && S.user; }, count: function () { return S ? S.txns.length : 0; }, apiV: function () { return S ? S.apiV : 0; } };
 })(typeof window !== 'undefined' ? window : this);

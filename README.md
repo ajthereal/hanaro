@@ -32,3 +32,10 @@ lost connection or a repeated send never loses or doubles an entry. Delete hides
 
 Setup values (the Sheet ID in each Apps Script project, the app link and each person's key) are entered once in the
 Apps Script project or on the device and are never committed.
+
+Budget (see `plans/budget.md`): every transfer from a company account to a personal account, and every income entry into a personal
+account, fills the plan from the top: Four Walls, bills and minimums, card overspend, everyday, starter emergency fund, debt snowball.
+The ladder is a pure function in `apps-script/api/Core.gs` (`fillLadder_`, `budgetRun_`), tested in `tests/budget.js`; the budget actions
+are tested in `tests/budget-api.js`. The budget tabs (`Budget`, `BudgetMoves`, `BudgetSettings`, `DebtOrder`) are made the first time they are
+written and are append-only. An older server without them keeps working: the Budget tab then asks for the new Code.gs
+(`node tests/e2e/compat.js`).
