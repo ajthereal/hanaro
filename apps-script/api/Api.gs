@@ -427,7 +427,6 @@ function dispatch_(book, who, req) {
     var arch = book.getSheetByName('Archive_YNAB') ? rows_(book, 'Archive_YNAB') : [];
     return { hints: buildPayeeHints_(arch, ynabCategoryMap_(rows_(book, 'Categories')), rows_(book, 'Rules')) };
   }
-  if (a === 'pt_file_list') return ptFileList_(book, who, req);
   if (a === 'set_payee_category') return setPayeeCategory_(book, who, req);
   if (a === 'attach_photo') return attachPhoto_(book, who, req);
   if (a === 'add_held_type') return addHeldType_(book, who, req);
@@ -543,7 +542,7 @@ function addHeldType_(book, who, req) {
 
 /* ---------- one transaction row: find, change, save once ---------- */
 
-var EDITABLE = { category: 1, payee: 1, idr_amount: 1, memo: 1, account: 1, entity: 1, pt_file: 1, date: 1, who: 1 };
+var EDITABLE = { category: 1, payee: 1, idr_amount: 1, memo: 1, account: 1, entity: 1, pt_file: 1, date: 1, who: 1, category_group: 1, to_account: 1 };
 
 /** Finds a row by id from the bottom up (new rows are at the bottom). Reads the id column, then only that row. */
 function findTxn_(book, id) {
@@ -605,7 +604,21 @@ function categoryBucket_(ctx, book, name) {
   return bucketForCategory(ctx.cats, name);
 }
 
+/** The group of a category when the name is in one group only (a few names, like Tools, exist in two). Otherwise empty, and the phone sends the group. */
+function groupForCategory_(ctx, book, name) {
+  if (!ctx.cats) ctx.cats = rows_(book, 'Categories');
+  var g = null;
+  for (var i = 0; i < ctx.cats.length; i++) {
+    if (ctx.cats[i].category !== name || !ctx.cats[i].group) continue;
+    if (g !== null && g !== ctx.cats[i].group) return '';
+    g = ctx.cats[i].group;
+  }
+  return g || '';
+}
+
 function updateTxn_(book, who, req) {
+  var tsh0 = book.getSheetByName('Transactions');
+  ['category_group', 'to_account'].forEach(function (c) { ensurePlanColumn_(tsh0, c); });
   var f = findTxn_(book, req.id), ch = req.changes || {}, ctx = {};
   assertVisible_(book, who, f);
   var type = f.vals[f.h.indexOf('txn_type')];
@@ -628,7 +641,11 @@ function updateTxn_(book, who, req) {
       }
     }
     setField_(book, who, f, k, val);
-    if (k === 'category') setField_(book, who, f, 'bucket', categoryBucket_(ctx, book, val));
+    if (k === 'category') {
+      var bk = categoryBucket_(ctx, book, val);
+      if (bk) setField_(book, who, f, 'bucket', bk);
+      if (ch.category_group === undefined) setField_(book, who, f, 'category_group', groupForCategory_(ctx, book, val));
+    }
     if (k === 'idr_amount') {
       var oc = String(f.vals[f.h.indexOf('orig_currency')] || ''), oa = num_(f.vals[f.h.indexOf('orig_amount')]);
       if (oc && oc !== 'IDR' && oa > 0) {
@@ -793,18 +810,18 @@ function addTxn_(book, who, req) {
   var partner = ROLES[who] !== 'owner';
   if (partner && (pt[acct] || pt[String(req.toAccount || '')] || pt[String(req.card || '')])) throw userError_(PT_ONLY_MSG_);
 
-  var payee = String(req.payee || '').trim(), cat = '', type = 'purchase', status = 'confirmed', entity = '', ptFile = '';
+  var payee = String(req.payee || '').trim(), cat = '', type = 'purchase', status = 'confirmed', toAcct = '';
   if (kind === 'transfer') {
     var to = String(req.toAccount || '').trim();
     if (!acct || acct === 'Cash') throw userError_('Choose the account the money leaves from.');
     if (!to) throw userError_('Choose the account the money goes to.');
     if (to === acct) throw userError_('Choose two different accounts.');
-    type = 'transfer'; cat = 'Own transfer'; payee = 'To ' + to;
+    type = 'transfer'; cat = 'Own transfer'; payee = 'To ' + to; toAcct = to;
   } else if (kind === 'payment') {
     var card = String(req.card || '').trim();
     if (!card) throw userError_('Choose the card that was paid.');
     if (!acct || acct === 'Cash') throw userError_('Choose the account the payment came from.');
-    type = 'payment'; payee = 'Payment to ' + card;
+    type = 'payment'; payee = 'Payment to ' + card; toAcct = card;
   } else {
     if (!payee) throw userError_('Type who or what it was for.');
     if (kind === 'held') {
@@ -815,8 +832,6 @@ function addTxn_(book, who, req) {
     else {
       cat = String(req.category || '');
       if (cat && isHeld_(book, cat)) throw userError_('That type is for money held for others. Use Held for others.');
-      entity = (req.entity === 'Family' || req.entity === 'Business') ? req.entity : '';
-      ptFile = req.pt_file ? 'Y' : '';
     }
   }
   // A spend without a category is saved now and waits in Review for a category.
@@ -824,10 +839,12 @@ function addTxn_(book, who, req) {
 
   var tm = stamp_(req), now = nowIso_(), flags = tm.flags.slice();
   if (est) flags.push('fx_est');
+  var tsh = book.getSheetByName('Transactions');
+  ['category_group', 'to_account'].forEach(function (c) { ensurePlanColumn_(tsh, c); });
   append_(book, 'Transactions', [{
     id: id, date: tm.day, timestamp: tm.stamp, txn_type: type, idr_amount: amt, orig_amount: origAmt, orig_currency: cur, fx_rate: fx === null ? '' : fx, flags: flags.join(','),
-    account: acct, payee: payee, category: cat, bucket: (kind === 'purchase' && cat) ? bucketForCategory(rows_(book, 'Categories'), cat) : '',
-    who: NAMES[who], source: 'manual', settled: 'Y', status: status, memo: req.memo || '', entity: entity, pt_file: ptFile, created_at: now, updated_at: now,
+    account: acct, payee: payee, category: cat, category_group: cat && kind === 'purchase' ? String(req.group || '') : '', to_account: toAcct, bucket: '',
+    who: NAMES[who], source: 'manual', settled: 'Y', status: status, memo: req.memo || '', created_at: now, updated_at: now,
     lat: has_(req.lat) && req.lat !== '' && req.lat !== null ? Number(req.lat) : '', lng: has_(req.lng) && req.lng !== '' && req.lng !== null ? Number(req.lng) : ''
   }]);
   audit_(book, NAMES[who], 'add', 'Transactions', id, '', '', amt);
@@ -937,27 +954,23 @@ function setPayeeCategory_(book, who, req) {
 }
 
 /** Everything filed for PT AHU in a month (default: this month), with receipt links, for the accountant. Only AJ sees the company side. */
-function ptFileList_(book, who, req) {
-  if (ROLES[who] !== 'owner') throw userError_('Only AJ can see what is filed for the company.');
-  var month = /^\d{4}-\d{2}$/.test(String(req.month || '')) ? req.month : todayFor_(req).slice(0, 7);
-  var items = rowsTail_(book, 'Transactions', TX_WINDOW).filter(function (t) {
-    return String(t.pt_file).toUpperCase() === 'Y' && t.status !== 'void' && dayOf_(t).slice(0, 7) === month;
-  }).sort(function (a, b) { return dayOf_(a).localeCompare(dayOf_(b)); }).map(function (t) {
-    return { id: t.id, date: dayOf_(t), payee: t.payee, category: t.category, amount: num_(t.idr_amount), account: t.account, entity: t.entity || '',
-      receipt: t.receipt_drive_id ? 'https://drive.google.com/file/d/' + t.receipt_drive_id + '/view' : '' };
-  });
-  return { month: month, items: items, total: items.reduce(function (a, i) { return a + i.amount; }, 0), missingReceipts: items.filter(function (i) { return !i.receipt; }).length };
+/** The _Inbox receipt folder in Drive (the same one as always). A Script Property RECEIPT_INBOX_ID points at it directly; without it the folder is found by name. */
+function receiptInbox_() {
+  var id = PropertiesService.getScriptProperties().getProperty('RECEIPT_INBOX_ID');
+  if (id) return DriveApp.getFolderById(id);
+  var it = DriveApp.getFoldersByName('PT_Receipts'), root = it.hasNext() ? it.next() : DriveApp.createFolder('PT_Receipts');
+  var sub = root.getFoldersByName('_Inbox');
+  return sub.hasNext() ? sub.next() : root.createFolder('_Inbox');
 }
 
-/** Saves a receipt photo to PT_Receipts/_Inbox in Drive (the nightly PT filing sorts it from there) and links it to the transaction. */
+/** Saves a receipt photo to the _Inbox receipt folder in Drive (every receipt goes there; the PT side files it from there) and links it to the transaction. */
 function attachPhoto_(book, who, req) {
   var ph = req.photo || req;
   if (!ph.data) throw userError_('The photo did not arrive. Please try again.');
   if (String(ph.data).length > 8000000) throw userError_('That photo is too large. Take it again or pick a smaller one.');
   var f = findTxn_(book, req.id);
   assertVisible_(book, who, f);
-  var it = DriveApp.getFoldersByName('PT_Receipts'), root = it.hasNext() ? it.next() : DriveApp.createFolder('PT_Receipts');
-  var sub = root.getFoldersByName('_Inbox'), folder = sub.hasNext() ? sub.next() : root.createFolder('_Inbox');
+  var folder = receiptInbox_();
   var rawDate = f.vals[f.h.indexOf('date')];
   var d = (rawDate instanceof Date) ? Utilities.formatDate(rawDate, 'Asia/Jakarta', 'yyyy-MM-dd') : String(rawDate).slice(0, 10), pay = String(f.vals[f.h.indexOf('payee')] || 'receipt').replace(/[^\w\- ]+/g, '').trim().slice(0, 30);
   var name = d + ' ' + pay + ' ' + f.vals[f.h.indexOf('idr_amount')] + '.jpg';

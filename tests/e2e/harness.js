@@ -76,7 +76,8 @@ function createServer(opts) {
     ScriptApp: {}
   };
   vm.createContext(sb);
-  ['Logic.gs', 'Core.gs', 'Api.gs'].forEach((f) => vm.runInContext(fs.readFileSync(path.join(opts.codeDir || path.join(__dirname, '../../apps-script/api'), f), 'utf8'), sb, { filename: f }));
+  const codeDir = opts.codeDir || path.join(__dirname, '../../apps-script/api');
+  ['Logic.gs', 'Core.gs', 'Api.gs'].forEach((f) => { if (fs.existsSync(path.join(codeDir, f))) vm.runInContext(fs.readFileSync(path.join(codeDir, f), 'utf8'), sb, { filename: f }); }); // Core.gs is missing in the old server code
   const KEYS = { aj: 'aj_test_key_' + 'a'.repeat(30), cynthia: 'cynthia_test_key_' + 'b'.repeat(26) };
   Object.keys(KEYS).forEach((who) => { props['HASH_' + who] = vm.runInContext('sha_(' + JSON.stringify(KEYS[who]) + ')', sb); });
   const log = { posts: [] };

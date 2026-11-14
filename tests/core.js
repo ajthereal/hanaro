@@ -58,4 +58,12 @@ const rep2 = C.spendReport_({ month: '2026-11', today: '2026-11-14', cutover: '2
   txns: [tx({ id: 'x', category: 'Groceries', idr_amount: 120000 })], archive: arch });
 eq('this month comes from Hanaro entries by group', [rep2.fromArchive, rep2.total, rep2.groups[0].group], [false, 120000, 'Everyday']);
 
+// docs/core.js (what the phone runs) must be the current build of Logic.gs + Core.gs
+const built = require('child_process').execFileSync('node', [path.join(__dirname, '../tools/bundle.js'), '--core']).toString();
+eq('the phone copy of the sums (docs/core.js) is up to date', fs.readFileSync(path.join(__dirname, '../docs/core.js'), 'utf8') === built, true);
+// no two files of the API may define the same function: Apps Script would silently keep only one
+const seen = {}, dups = [];
+['Logic.gs', 'Core.gs', 'Api.gs', 'YnabImport.gs'].forEach((f) => fs.readFileSync(path.join(__dirname, '../apps-script/api', f), 'utf8').replace(/^function (\w+)/gm, (m, n) => { if (seen[n]) dups.push(n); seen[n] = f; }));
+eq('no function name is defined twice across the API files', dups, []);
+
 module.exports = failed;
