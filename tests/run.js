@@ -427,6 +427,7 @@ eq('closest foreign amount wins', L.findMatches_([fx({ id: 'm' }), bankMail({ id
 
 failed += require('./glue.js');
 failed += require('./core.js');
+failed += require('./engine.js');
 
 console.log(failed ? '\n' + failed + ' FAILED' : '\nAll passed');
 process.exit(failed ? 1 : 0);
