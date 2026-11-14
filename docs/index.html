@@ -68,7 +68,7 @@
       <button id="kindGot" role="tab">Received</button>
       <button id="kindTransfer" role="tab">Transfer</button>
       <button id="kindPay" role="tab">Pay card</button>
-      <button id="kindHeld" role="tab">Held</button>
+      <button id="kindHeld" role="tab" hidden>Held</button>
     </div>
   </div>
   <div class="fields">
@@ -96,11 +96,6 @@
     <div id="photoPrev" class="pprev" hidden><img id="photoThumb" alt="Receipt photo preview"><div class="pact"><button type="button" class="link" id="photoChange">Replace</button><button type="button" class="link" id="photoRemove">Remove</button></div></div>
     <input id="photoCam" type="file" accept="image/*" capture="environment" hidden><input id="photoIn" type="file" accept="image/*" hidden>
     <div class="field"><label for="addMemo">Memo</label><input id="addMemo" autocomplete="off" placeholder="Add a note"></div>
-    <button id="moreBtn" class="field fbtn" type="button"><span class="fl">More</span><span class="fv" id="moreVal">Family or business, PT AHU</span><span class="chev" id="moreChev" aria-hidden="true">›</span></button>
-    <div id="moreWrap" hidden>
-      <div class="field" id="entityWrap"><span class="fl">This spending is</span><div class="seg" id="entitySeg"><button type="button" id="entFam" class="on">Family</button><button type="button" id="entBiz">Business</button></div></div>
-      <div class="field" id="ptWrap"><label class="chk" for="addPt"><input type="checkbox" id="addPt"> File for PT AHU</label><span class="note">Also counts as company spending. Your receipt photo goes to the PT_Receipts folder.</span></div>
-    </div>
   </div>
   <p id="addMsg" class="err" role="alert"></p>
   <button id="addSave" class="primary savefab">Save</button>
@@ -126,8 +121,6 @@
     <button id="teAcc" class="field fbtn" type="button" hidden><span class="fl">Account</span><span class="fv" id="teAccVal">Not sure</span><span class="chev" aria-hidden="true">›</span></button>
     <div class="field" id="teDateWrap" hidden><label for="teDate">Date</label><input id="teDate" type="date"></div>
     <div class="field" id="teWhoWrap" hidden><span class="fl">Who</span><div class="seg"><button type="button" id="teAJ">AJ</button><button type="button" id="teCyn">Cynthia</button></div></div>
-    <div class="field" id="teEntWrap"><span class="fl">This spending is</span><div class="seg"><button type="button" id="teFam" class="on">Family</button><button type="button" id="teBiz">Business</button></div></div>
-    <div class="field" id="tePtWrap"><label class="chk" for="tePt"><input type="checkbox" id="tePt"> File for PT AHU</label></div>
     <div class="field"><label for="teMemo">Memo</label><input id="teMemo" autocomplete="off"></div>
     <div class="field" id="tePhotoWrap"><span class="fl">Receipt photo</span><button id="tePhoto" class="link" type="button">Add receipt photo</button><img id="tePhotoThumb" class="thumb" alt="Receipt photo preview" hidden><input id="tePhotoIn" type="file" accept="image/*" hidden></div>
   </div>
