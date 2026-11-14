@@ -2,5 +2,5 @@
 // Usage: node tools/bundle.js > Code.gs   (the Sheet ID is typed into the pasted copy, never into this repo)
 const fs = require('fs'), path = require('path');
 const dir = path.join(__dirname, '../apps-script/api');
-const out = ['Logic.gs', 'Api.gs', 'YnabImport.gs'].map((f) => '// ===== ' + f + ' =====\n' + fs.readFileSync(path.join(dir, f), 'utf8')).join('\n');
+const out = ['Logic.gs', 'Core.gs', 'Api.gs', 'YnabImport.gs'].map((f) => '// ===== ' + f + ' =====\n' + fs.readFileSync(path.join(dir, f), 'utf8')).join('\n');
 process.stdout.write(out);

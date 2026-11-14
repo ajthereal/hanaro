@@ -304,40 +304,6 @@ function removePlan_(book, who, req) {
   return { saved: true };
 }
 
-function slim_(t, settled, ctx) {
-  var f = flagsOf_(t);
-  return {
-    id: t.id, date: dayOf_(t), timestamp: t.timestamp, type: t.txn_type, amount: t.idr_amount === '' ? null : Number(t.idr_amount),
-    account: t.account, payee: t.payee, category: t.category, bucket: t.bucket, status: t.status, memo: t.memo, source: t.source,
-    payNow: f.indexOf('pay_now') !== -1, paid: !!(settled && settled[t.id]), links: t.links_to_id || '', who: t.who || '', by: byOf_(t, ctx),
-    cleared: t.source === 'email', receipt: !!t.receipt_drive_id, entity: t.entity || '', origAmount: has_(t.orig_amount) && t.orig_amount !== '' ? Number(t.orig_amount) : null, origCurrency: t.orig_currency || '', est: f.indexOf('fx_est') !== -1, ptFile: String(t.pt_file).toUpperCase() === 'Y', lat: has_(t.lat) && t.lat !== '' ? Number(t.lat) : null, lng: has_(t.lng) && t.lng !== '' ? Number(t.lng) : null,
-    matched: f.indexOf('matched') !== -1, dateOnly: dateOnly_(t)
-  };
-}
-
-function ownersCtx_(d) {
-  var ctx = { pt: ptAccounts_(d.accounts), owners: {} };
-  d.accounts.forEach(function (x) { ctx.owners[x.account] = x.owner; if (x.last4 && x.type === 'bank') ctx.owners['BCA ...' + x.last4] = x.owner; });
-  return ctx;
-}
-
-function reviewList_(d) {
-  var settled = settledPayNow(d.txns), byId = {};
-  d.txns.forEach(function (t) { byId[t.id] = t; });
-  return reviewItems(d.txns).slice(0, 100).map(function (i) {
-    var o = { kind: i.kind, txn: slim_(i.t, settled) };
-    if (i.kind === 'duplicate' && byId[i.t.links_to_id]) o.other = slim_(byId[i.t.links_to_id], settled);
-    return o;
-  });
-}
-
-function activityList_(d) {
-  var settled = settledPayNow(d.txns), ctx = ownersCtx_(d);
-  return d.txns.filter(function (t) { return t.status !== 'void'; })
-    .sort(function (x, y) { return Date.parse(y.timestamp) - Date.parse(x.timestamp); }).slice(0, 150)
-    .map(function (t) { return slim_(t, settled, ctx); });
-}
-
 function accountsFull_(accounts, role) {
   return accounts.filter(function (x) { return x.active !== 'N' && (x.type === 'bank' || x.type === 'credit card') && (role === 'owner' || x.entity !== 'PT'); })
     .map(function (x) { return { account: x.account, type: x.type, entity: x.entity || '', owner: x.owner || '', payNow: Number(x.pay_within_days) > 0 }; });

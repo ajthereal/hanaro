@@ -426,6 +426,7 @@ eq('an IDR entry still needs the exact amount', L.findMatches_([fx({ id: 'm', or
 eq('closest foreign amount wins', L.findMatches_([fx({ id: 'm' }), bankMail({ id: 'far', idr_amount: 68000 }), bankMail({ id: 'near', idr_amount: 63000 })]).map((p) => p.email.id), ['near']);
 
 failed += require('./glue.js');
+failed += require('./core.js');
 
 console.log(failed ? '\n' + failed + ' FAILED' : '\nAll passed');
 process.exit(failed ? 1 : 0);

@@ -45,7 +45,7 @@ sb.__cache = {
 };
 sb.__props = {};
 vm.createContext(sb);
-['Logic.gs', 'Api.gs'].forEach((f) => vm.runInContext(fs.readFileSync(path.join(__dirname, '../apps-script/api', f), 'utf8'), sb, { filename: f }));
+['Logic.gs', 'Core.gs', 'Api.gs'].forEach((f) => vm.runInContext(fs.readFileSync(path.join(__dirname, '../apps-script/api', f), 'utf8'), sb, { filename: f }));
 const run = (code) => vm.runInContext(code, sb);
 
 let failed = 0;
