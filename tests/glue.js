@@ -9,6 +9,7 @@ function makeBook(tabs) {
     getDataRange: () => ({ getValues: () => data[name].map((r) => r.slice()) }),
     getLastRow: () => data[name].length, getLastColumn: () => data[name][0].length,
     getRange: (r, c, nr, nc) => ({
+      getDisplayValues: () => { const out = []; for (let i = 0; i < (nr || 1); i++) { const row = []; for (let j = 0; j < (nc || 1); j++) { const x = (data[name][r - 1 + i] || [])[c - 1 + j] ?? ''; row.push(x instanceof Date ? x.toISOString().slice(0, 10) : String(x)); } out.push(row); } return out; },
       getValues: () => { const out = []; for (let i = 0; i < (nr || 1); i++) { const row = []; for (let j = 0; j < (nc || 1); j++) row.push((data[name][r - 1 + i] || [])[c - 1 + j] ?? ''); out.push(row); } return out; },
       setValue: (v) => { while (data[name].length < r) data[name].push([]); data[name][r - 1][c - 1] = v; },
       setValues: (vals) => { vals.forEach((row, i) => { while (data[name].length < r + i) data[name].push([]); row.forEach((v, j) => { data[name][r - 1 + i][c - 1 + j] = v; }); }); }
@@ -84,6 +85,11 @@ eq('running the match again changes nothing', run("reconcile_(book_(), 'system')
 // the pay-now flag stays, so the charge still shows as unpaid until paid
 const home = run("computeHome(data_(book_(), 'aj'))");
 eq('home counts the purchase once', [home.spentToday > 0 || true, home.toPayCount], [true, 1]);
+
+// a date cell that reads back as the evening before still shows the day the Sheet shows
+sb.__book.data.Balances.push([new Date('2026-11-14T00:00:00Z'), 'Bank A', 1, 'typed', 'aj']);
+eq('date cells keep the day shown in the Sheet', run("rows_(book_(), 'Balances')").pop().date_confirmed, '2026-11-14');
+sb.__book.data.Balances.pop();
 
 // default category for a place
 run("setPayeeCategory_(book_(), 'aj', { payee: 'Sate Tegal Ibu', category: 'Eating out' })");

@@ -55,9 +55,21 @@ function rowsFrom_(book, name, n) {
     first = (last - 1 > n) ? last - n + 1 : 2;
     v = sh.getRange(first, 1, last - first + 1, cols).getValues();
   }
+  // A date cell comes back as a Date whose midnight depends on the time zones involved, which can land on the day before.
+  // The text the Sheet shows for a date-only column is always right, so use that for the day columns.
+  var dayCol = {}, nrows = v.length;
+  h.forEach(function (k, j) {
+    if (/(^|_)date($|_)/.test(String(k)) && nrows > 0) {
+      var shown = sh.getRange(first, j + 1, nrows, 1).getDisplayValues();
+      dayCol[j] = shown;
+    }
+  });
   return v.map(function (r, i) {
     var o = { _row: first + i };
-    h.forEach(function (k, j) { o[k] = cellOut_(r[j], tz); });
+    h.forEach(function (k, j) {
+      var shown = dayCol[j] ? dayCol[j][i][0] : '';
+      o[k] = (r[j] instanceof Date && /^\d{4}-\d{2}-\d{2}$/.test(shown)) ? shown : cellOut_(r[j], tz);
+    });
     return o;
   });
 }
