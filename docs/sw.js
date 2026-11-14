@@ -1,6 +1,6 @@
 /* Keeps the app shell on the device so it opens at once, even with no signal. Data is kept by the app itself (engine.js).
    The saved shell is shown first and refreshed in the background, so a new version appears the next time the app opens. */
-var CACHE = 'hanaro-shell-v19';
+var CACHE = 'hanaro-shell-v20';
 var SHELL = ['./', 'index.html', 'style.css', 'app.js', 'core.js', 'engine.js', 'manifest.webmanifest', 'icon-192.png', 'icon-180.png'];
 self.addEventListener('install', function (e) { e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); }).then(function () { return self.skipWaiting(); })); });
 self.addEventListener('activate', function (e) {

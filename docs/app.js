@@ -123,7 +123,7 @@
 
   /* ---------- data: show the saved copy first, refresh behind it ---------- */
   var E = window.HanaroEngine, MEMK = { home: 1, review: 1, activity: 1, categories: 1, plan: 1 }, mem = {};
-  function snap(k) { if (MEMK[k]) return mem[k] || null; var raw = LS.get('hanaro.cache.' + k); try { return raw ? JSON.parse(raw) : null; } catch (e) { return null; } }
+  function snap(k) { if (MEMK[k]) { if (!mem[k] && E.ready()) mem[k] = { at: Date.now(), d: computeView(k) }; return mem[k] || null; } var raw = LS.get('hanaro.cache.' + k); try { return raw ? JSON.parse(raw) : null; } catch (e) { return null; } }
   function save(k, d) { if (MEMK[k]) { mem[k] = { at: Date.now(), d: d }; return; } LS.set('hanaro.cache.' + k, JSON.stringify({ at: Date.now(), d: d })); }
   function patch(k, fn) { var c = snap(k); if (!c) return; fn(c.d); save(k, c.d); }
   function readQueue() { try { return JSON.parse(LS.get('hanaro.queue') || '[]'); } catch (e) { return []; } }
@@ -154,14 +154,16 @@
     else return;
     pushViews();
   }
-  /** Fills the saved screen copies from the phone's data. */
+  /** The screen copies are worked out from the phone's data when a screen asks for them, and again only after a change. */
   function pushViews() {
     if (!E.ready()) return;
-    var today = localIso().slice(0, 10);
-    save('home', E.view('home', today)); save('review', E.view('review', today)); save('activity', E.view('activity', today)); save('plan', E.view('plan', today));
-    save('categories', catsPayload());
+    Object.keys(mem).forEach(function (k) { delete mem[k]; });
     var u = E.user(); if (u) setWho(u);
-    state.counts.review = snap('home').d.reviewCount; renderNav();
+    var hc = snap('home'); if (hc) { state.counts.review = hc.d.reviewCount; renderNav(); }
+  }
+  function computeView(k) {
+    var today = localIso().slice(0, 10);
+    return k === 'categories' ? catsPayload() : E.view(k === 'plan' ? 'plan' : k, today);
   }
   function catsPayload() {
     var accts = E.accountList().map(function (a) { return { account: a.account, type: a.type === 'savings' ? 'bank' : a.type, entity: a.entity || '', owner: a.owner || '', payNow: Number(a.pay_within_days) > 0 }; });
@@ -217,8 +219,8 @@
   function refresh() {
     return flush().then(function () {
       if (queue.length) { var qe = state.flushErr && !/Cannot reach/.test(state.flushErr); var e = new Error(qe ? 'Some changes are waiting to be sent: ' + state.flushErr : 'Cannot reach Hanaro. Check your internet connection.'); e.net = !qe; throw e; }
-      if (!bootP) bootP = api('sync', { since: E.since() }).then(function (d) {
-        E.absorb(d); pushViews(); lastSyncAt = Date.now();
+      if (!bootP) { var syncT0 = performance.now(); bootP = api('sync', { since: E.since() }).then(function (d) {
+        E.absorb(d); pushViews(); lastSyncAt = Date.now(); state.syncMs = Math.round(performance.now() - syncT0);
         addPlaces(snap('activity').d.items.map(function (t) { return { lat: t.lat, lng: t.lng, payee: t.payee, category: t.category, account: t.account }; }));
         state.offline = false; state.offlineSaid = false;
         bootP = null; return d;
@@ -226,7 +228,7 @@
         bootP = null;
         if (/does not know/.test(e.message)) throw new Error('Hanaro needs its server update. Paste the newest API code and redeploy it.');
         throw e;
-      });
+      }); }
       return bootP;
     });
   }
@@ -681,7 +683,7 @@
     }
     html += '<div id="health"></div>';
     html += '<div class="card"><div class="label">Places and payees</div><p class="note">See where you spend and set the default category for each place.</p><button class="ghost small" id="openPlaces">Open places</button></div>';
-    html += '<div class="card"><div class="label">This device</div><p class="note">The link and key are stored on this device only.</p><button class="link" id="signOut">Disconnect this device</button></div>';
+    html += '<div class="card"><div class="label">This device</div><p class="note">The link and key are stored on this device only.</p><button class="link" id="signOut">Disconnect this device</button><p class="tiny muted" style="margin-top:6px">' + esc(diagLine()) + '</p></div>';
     v.innerHTML = html;
     v.querySelectorAll('[data-bank]').forEach(function (b) { b.addEventListener('click', function () { confirmBalance(v, d.banks[Number(b.getAttribute('data-bank'))], false); }); });
     v.querySelectorAll('[data-loan]').forEach(function (b) { b.addEventListener('click', function () { confirmBalance(v, d.loans[Number(b.getAttribute('data-loan'))], true); }); });
@@ -693,6 +695,8 @@
     $('signOut').addEventListener('click', disconnect);
     loadHealth();
   }
+  /** One quiet line of timings, so a slow screen can be told apart from a slow connection. */
+  function diagLine() { return 'Opened in ' + (state.openMs || '?') + ' ms · last sync ' + (state.syncMs || '?') + ' ms · ' + E.count() + ' entries on this phone'; }
   function disconnect() {
     confirmBox('Disconnect this device from Hanaro? Changes still waiting to be sent will be lost.', 'Disconnect', function () {
       ['key', 'url', 'queue', 'lastsync'].forEach(function (k) { LS.del('hanaro.' + k); });
@@ -874,7 +878,7 @@
   }
   function reviewCard(i) {
     var t = i.txn, k = KIND[i.kind], id = esc(t.id);
-    var h = '<div class="card" data-id="' + id + '"><span class="tag ' + k[1] + '">' + k[0].toUpperCase() + '</span>';
+    var h = '<div class="card" data-id="' + id + '"><span class="tag ' + k[1] + '">' + (i.kind === 'confirm' && t.source === 'email' ? 'FROM THE BANK, NOT TYPED IN' : k[0].toUpperCase()) + '</span>';
     var amt = t.amount === null ? '' : '<div class="a">' + rp(t.amount) + '</div>';
     if (i.kind === 'unread') {
       h += '<div class="item-top"><div class="p">' + esc(t.payee || 'Unreadable email') + '</div></div><div class="sub">' + esc(t.memo) + '</div>' +
@@ -964,8 +968,8 @@
     else if (t.status === 'possible_duplicate') h += '<span class="tag dup">DUPLICATE?</span>';
     else if (t.payNow && t.paid) h += '<span class="tag paid">PAID</span>';
     else if (t.payNow) h += '<span class="tag pay">PAY NOW</span>';
-    if (t.entity === 'Business') h += '<span class="tag by-business">BUSINESS</span>';
-    if (t.ptFile) h += '<span class="tag gray">PT AHU</span>';
+    else if (t.cleared) h += '<span class="tag clr">CLEARED</span>';
+    else if (t.waiting) h += '<span class="tag wait">NOT AT BANK YET</span>';
     return h;
   }
   function actRow(t) {
@@ -1388,12 +1392,26 @@
         var t = sugCache[Number(b.getAttribute('data-sug'))];
         $('addPayee').value = t.payee; box.hidden = true;
         if (state.kind !== 'got' && t.category && kindRows().some(function (c) { return c.category === t.category; })) setCat(t.category);
-        if (t.account && state.accounts.indexOf(t.account) !== -1) setAcc(t.account);
+        var da = t.account || defaultAcctFor(t.payee);
+        if (da && state.accounts.indexOf(da) !== -1) setAcc(da);
       });
     });
   }
+  /** The account this place was last paid from most often, so the account does not have to be chosen each time. */
+  function defaultAcctFor(payee) {
+    var key = String(payee || '').trim().toLowerCase(), n = {}, best = '';
+    if (!key) return '';
+    recentTxns().forEach(function (t) { if (t.account && t.type === 'purchase' && String(t.payee || '').trim().toLowerCase() === key) n[t.account] = (n[t.account] || 0) + 1; });
+    Object.keys(n).forEach(function (a) { if (!best || n[a] > n[best]) best = a; });
+    return best;
+  }
   /* No payee chips before typing. Suggestions come only from the location, or from what is typed. */
   function showFavs() { $('payeeSug').hidden = true; }
+  $('addPayee').addEventListener('change', function () {
+    if (state.kind !== 'spent' || $('addAcc').value) return;
+    var da = defaultAcctFor($('addPayee').value);
+    if (da && state.accounts.indexOf(da) !== -1) setAcc(da);
+  });
   $('addPayee').addEventListener('input', function () {
     var v = $('addPayee').value;
     if (!v.trim()) { showFavs(); return; }
@@ -1611,7 +1629,8 @@
   function start() {
     $('setup').hidden = true; $('app').hidden = false; $('nav').hidden = false;
     renderNav();
-    E.load().then(function (ok) { if (ok) pushViews(); render(); });
+    var t0 = performance.now();
+    E.load().then(function (ok) { if (ok) pushViews(); render(); state.openMs = Math.round(performance.now() - t0); });
   }
   document.addEventListener('visibilitychange', function () { if (!document.hidden && conf().key && $('sheet').hidden && $('dlg').hidden) { if (queue.length) flush().then(afterWrite); render(); } });
   window.addEventListener('online', function () { state.offline = false; if (conf().key) { flush().then(afterWrite); setPill(); } });

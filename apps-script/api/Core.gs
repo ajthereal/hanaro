@@ -123,20 +123,30 @@ function trackedAll_(accounts, balances, txns) {
  * for an email, on an account whose emails Hanaro reads, are "not seen at the bank yet". A bank email with no typed entry
  * is a possibly forgotten entry, and sits in Review. Returns { perAccount: {account: {count, amount, old}}, count, amount, old }.
  */
-function clearing_(txns, accounts, today) {
-  var reads = {}, per = {}, total = { count: 0, amount: 0, old: 0 };
+function emailAccounts_(txns, accounts) {
+  var reads = {};
   txns.forEach(function (t) {
     if (t.source !== 'email') return;
     var a = resolveAccount_(accounts, t.account);
     if (a) reads[a.account] = true;
   });
+  return reads;
+}
+
+/** Is this typed entry still waiting for its bank email? Only on accounts whose emails Hanaro reads, for entries up to 30 days old. */
+function waitingForBank_(t, accounts, reads, today) {
+  if (t.source !== 'manual' || (t.status !== 'confirmed' && t.status !== 'auto')) return false;
+  if (t.txn_type !== 'purchase' && t.txn_type !== 'transfer' && t.txn_type !== 'payment') return false;
+  var a = resolveAccount_(accounts, t.account);
+  return !!(a && reads[a.account] && daysBetween_(dayOf_(t), today) <= 30);
+}
+
+function clearing_(txns, accounts, today) {
+  var reads = emailAccounts_(txns, accounts), per = {}, total = { count: 0, amount: 0, old: 0 };
   txns.forEach(function (t) {
-    if (t.source !== 'manual' || (t.status !== 'confirmed' && t.status !== 'auto')) return;
-    if (t.txn_type !== 'purchase' && t.txn_type !== 'transfer' && t.txn_type !== 'payment') return;
+    if (!waitingForBank_(t, accounts, reads, today)) return;
     var a = resolveAccount_(accounts, t.account);
-    if (!a || !reads[a.account]) return;
     var age = daysBetween_(dayOf_(t), today);
-    if (age > 30) return;
     var p = per[a.account] = per[a.account] || { count: 0, amount: 0, old: 0 };
     p.count++; p.amount += num_(t.idr_amount);
     total.count++; total.amount += num_(t.idr_amount);
@@ -371,10 +381,10 @@ function reviewList_(d) {
 }
 
 function activityList_(d) {
-  var settled = settledPayNow(d.txns), ctx = ownersCtx_(d);
+  var settled = settledPayNow(d.txns), ctx = ownersCtx_(d), reads = emailAccounts_(d.txns, d.accounts || []);
   return d.txns.filter(function (t) { return t.status !== 'void'; })
     .sort(function (x, y) { return Date.parse(y.timestamp) - Date.parse(x.timestamp); }).slice(0, 150)
-    .map(function (t) { return slim_(t, settled, ctx); });
+    .map(function (t) { var o = slim_(t, settled, ctx); o.waiting = d.today ? waitingForBank_(t, d.accounts || [], reads, d.today) : false; return o; });
 }
 
 if (typeof module !== 'undefined') {

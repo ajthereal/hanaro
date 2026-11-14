@@ -51,6 +51,8 @@ const clr = C.clearing_([
 ], acc, '2026-11-14');
 eq('a typed entry with no bank email yet is counted as not seen at the bank', [clr.count, clr.amount, clr.old], [1, 100000, 0]);
 
+const act = C.activityList_({ txns: [tx({ id: 'w1', timestamp: '2026-11-13T10:00:00+07:00' }), tx({ id: 'w2', account: 'Bank B' }), tx({ id: 'e1', source: 'email', status: 'auto', account: 'Bank A ...99', idr_amount: 5 })], accounts: acc, today: '2026-11-14' });
+eq('only typed entries on accounts whose emails are read show as waiting for the bank', act.map((i) => i.id + ':' + i.waiting + ':' + i.cleared).sort(), ['e1:false:true', 'w1:true:false', 'w2:false:false']);
 const arch = [{ month: '2026-09', group: 'Everyday', category: 'Groceries', spent: 900000, count: 7 }, { month: '2026-09', group: 'Debt Payment', category: 'Loan', spent: 500000, count: 1 }];
 const rep = C.spendReport_({ month: '2026-09', today: '2026-11-14', cutover: '2026-11-01', accounts: acc, txns: [], cats: [], archive: arch });
 eq('older months come from the archive and keep debt payments apart', [rep.fromArchive, rep.total, rep.other.length], [true, 900000, 1]);

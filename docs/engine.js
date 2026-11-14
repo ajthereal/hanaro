@@ -18,8 +18,10 @@
   function idbSet(k, v) { return open().then(function (db) { return new Promise(function (res, rej) { var tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').put(v, k); tx.oncomplete = function () { res(); }; tx.onerror = function () { rej(tx.error); }; }); }); }
   function idbDel(k) { return open().then(function (db) { return new Promise(function (res) { var tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').delete(k); tx.oncomplete = res; tx.onerror = res; }); }); }
 
+  var ver = 0, dropped = null, droppedVer = -1; // ver goes up with every change; the matched-entry cleanup is done once per version, not once per screen
   var saveT = null;
   function persist() {
+    ver++;
     if (memOnly || !S) return;
     clearTimeout(saveT);
     saveT = setTimeout(function () { idbSet('data', S).catch(function () { memOnly = true; }); }, 150);
@@ -54,15 +56,16 @@
   /** The marker to send with the next sync. Rows still waiting to be sent do not move it. */
   function since() { return S && S.newest ? S.newest : ''; }
 
-  function ctx(today) { return { txns: C.dropMatchedManual_(S.txns), accounts: S.accounts, balances: S.balances, cats: S.cats, summary: S.summary, today: today, role: S.user && S.user.role }; }
+  function live() { if (droppedVer !== ver || !dropped) { dropped = C.dropMatchedManual_(S.txns); droppedVer = ver; } return dropped; }
+  function ctx(today) { return { txns: live(), accounts: S.accounts, balances: S.balances, cats: S.cats, summary: S.summary, today: today, role: S.user && S.user.role }; }
 
   var views = {
     home: function (today) { var h = C.homeView_(ctx(today)); h.user = S.user; return h; },
     accounts: function (today) { return C.accountsView_(ctx(today)); },
     spending: function (today, month) { var c = ctx(today); return C.spendReport_({ month: month || today.slice(0, 7), today: today, accounts: S.accounts, txns: c.txns, cats: S.cats, archive: S.archive, cutover: S.cutover }); },
-    plan: function (today) { return C.computePlan_({ plan: S.plan, txns: C.dropMatchedManual_(S.txns), accounts: S.accounts, today: today, paid: S.paid }); },
-    review: function () { return { items: C.reviewList_({ txns: C.dropMatchedManual_(S.txns), accounts: S.accounts }) }; },
-    activity: function () { var c = ctx(''); return { items: C.activityList_({ txns: c.txns, accounts: S.accounts }) }; }
+    plan: function (today) { return C.computePlan_({ plan: S.plan, txns: live(), accounts: S.accounts, today: today, paid: S.paid }); },
+    review: function () { return { items: C.reviewList_({ txns: live(), accounts: S.accounts }) }; },
+    activity: function (today) { var c = ctx(today || ''); return { items: C.activityList_({ txns: c.txns, accounts: S.accounts, today: today || '' }) }; }
   };
   function view(name, today, arg) { return S ? views[name](today, arg) : null; }
 
@@ -133,5 +136,5 @@
   }
 
   root.HanaroEngine = { load: load, ready: ready, clear: clear, absorb: absorb, since: since, view: view, categories: categories, accountList: accountList,
-    localAdd: localAdd, localUpdate: localUpdate, localStatus: localStatus, localFlag: localFlag, localBalance: localBalance, localLimit: localLimit, trackedNow: trackedNow, user: function () { return S && S.user; }, apiV: function () { return S ? S.apiV : 0; } };
+    localAdd: localAdd, localUpdate: localUpdate, localStatus: localStatus, localFlag: localFlag, localBalance: localBalance, localLimit: localLimit, trackedNow: trackedNow, user: function () { return S && S.user; }, count: function () { return S ? S.txns.length : 0; }, apiV: function () { return S ? S.apiV : 0; } };
 })(typeof window !== 'undefined' ? window : this);
