@@ -1599,6 +1599,8 @@
   var KIND_BTN = { spent: 'kindSpent', got: 'kindGot', transfer: 'kindTransfer', payment: 'kindPay', held: 'kindHeld' };
   function setKind(k) {
     state.kind = k;
+    // A place suggestion is for purchases only; drop it when switching to another kind.
+    if (k !== 'spent' && state.geoApplied) { $('addPayee').value = ''; setCat(''); $('geoNote').hidden = true; state.geoApplied = false; }
     Object.keys(KIND_BTN).forEach(function (x) { $(KIND_BTN[x]).className = k === x ? 'on' : ''; });
     var move = k === 'transfer' || k === 'payment', newServer = (state.apiV || 1) >= 3;
     $('kindTransfer').hidden = !newServer; $('kindPay').hidden = !newServer;
